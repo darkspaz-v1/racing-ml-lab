@@ -66,6 +66,7 @@ class App:
         self.tiny = pygame.font.SysFont("segoeui", 12)
         self.title = pygame.font.SysFont("segoeui", 24, bold=True)
         self.bold = pygame.font.SysFont("segoeui", 16, bold=True)
+        self.mono = pygame.font.SysFont("consolas", 14)
         self.car_painter = CarPainter()
         self.track = default_track()
         self.settings = Settings()
@@ -117,6 +118,13 @@ class App:
         self.screen.blit(rendered, rendered.get_rect(center=rect.center))
         if not disabled:
             self.buttons.append((rect, action))
+
+    def cycle_metric(self, direction: int) -> None:
+        metrics = ["score", "progress", "completion", "crashes", "lap"]
+        if self.algorithm == "dqn":
+            metrics.append("reward")
+        current = self.chart_metric if self.chart_metric in metrics else metrics[0]
+        self.chart_metric = metrics[(metrics.index(current) + direction) % len(metrics)]
 
     def reset_trainers(self):
         self.trainers = {"evolution": EvolutionTrainer(self.track, self.settings),
@@ -585,74 +593,96 @@ class App:
     def _draw_inspector(self):
         rect = pygame.Rect(RX, 83, RW, 273)
         box(self.screen, rect)
-        text(self.screen, self.bold, "LIVE DECISION", TEXT, RX + 18, 96)
+        text(self.screen, self.bold, "LIVE DECISION", TEXT, RX + 18, 95)
         if self.view == "compare":
-            self.button("Inspect evolution", (RX + 268, 92, 128, 26),
+            self.button("Evolution", (RX + 305, 91, 94, 31),
                         lambda: setattr(self, "algorithm", "evolution"),
                         active=self.algorithm == "evolution")
-            self.button("Inspect RL", (RX + 404, 92, 115, 26),
+            self.button("RL driver", (RX + 407, 91, 115, 31),
                         lambda: setattr(self, "algorithm", "dqn"),
                         active=self.algorithm == "dqn")
-        subtitle = (f"Watching evolution car E{self.trainers['evolution'].index + 1} · policy scores"
+        subtitle = (f"Watching car E{self.trainers['evolution'].index + 1} · largest policy score acts"
                     if self.algorithm == "evolution" and self.view in ("train", "compare") else
-                    "Q values → greedy or explore" if self.algorithm == "dqn" else
-                    "Policy scores → highest wins")
-        text(self.screen, self.small, subtitle, MUTED, RX + 18, 119)
+                    "DQN · Q values estimate future reward" if self.algorithm == "dqn" else
+                    "Policy scores · largest value acts")
+        text(self.screen, self.small, subtitle, MUTED, RX + 18, 119, 500)
         frame = self._world_frame() or {}
         obs = np.asarray(frame.get("observation", []), dtype=float)
         hidden = np.asarray(frame.get("hidden", []), dtype=float)
         outputs = np.asarray(frame.get("outputs", []), dtype=float)
         action = frame.get("action")
-        input_x, hidden_x, output_x = RX + 158, RX + 281, RX + 401
-        in_ys = [151 + i * 15 for i in range(len(INPUT_NAMES))]
-        hidden_ys = [148 + i * 12.5 for i in range(16)]
-        out_ys = [162 + i * 36 for i in range(5)]
-        network = self.opponent_network if self.view == "race" and self.opponent_network else self.trainer.current_network
-        show_weights = self.view != "replay"
-        for i, y1 in enumerate(in_ys):
-            for j, y2 in enumerate(hidden_ys):
-                weight = network.w1[i, j]
-                pygame.draw.line(self.screen, (41, 93, 84) if weight >= 0 and show_weights else
-                                 (91, 55, 62) if show_weights else (54, 67, 76),
-                                 (input_x, int(y1)), (hidden_x, int(y2)), 1)
-        for i, y1 in enumerate(hidden_ys):
-            for j, y2 in enumerate(out_ys):
-                weight = network.w2[i, j]
-                pygame.draw.line(self.screen, (44, 109, 91) if weight >= 0 and show_weights else
-                                 (105, 60, 67) if show_weights else (54, 67, 76),
-                                 (hidden_x, int(y1)), (output_x, int(y2)), 1)
-        for i, y in enumerate(in_ys):
-            value = obs[i] if len(obs) == len(INPUT_NAMES) else 0
-            text(self.screen, self.tiny, INPUT_NAMES[i], MUTED, RX + 17, int(y) - 7)
-            pygame.draw.circle(self.screen, (76, int(110 + min(1, abs(value)) * 125), 148),
-                               (input_x, y), 5)
-        for i, y in enumerate(hidden_ys):
-            value = hidden[i] if len(hidden) == 16 else 0
-            intensity = int(75 + min(1, abs(value)) * 160)
-            pygame.draw.circle(self.screen, (intensity, 116, 78) if value < 0 else (76, intensity, 130),
-                               (hidden_x, int(y)), 4)
-        for i, y in enumerate(out_ys):
+        # Three stages expose actual values without burying them under 272 weight lines.
+        for x in (RX + 182, RX + 306):
+            pygame.draw.line(self.screen, BORDER, (x, 150), (x, 319))
+        text(self.screen, self.tiny, "01  SENSE · 12 INPUTS", BLUE, RX + 18, 145)
+        text(self.screen, self.tiny, "02  THINK · 16 UNITS", GREEN, RX + 194, 145)
+        text(self.screen, self.tiny, "03  ACT · 5 VALUES", ORANGE, RX + 318, 145)
+        for i, name in enumerate(INPUT_NAMES):
+            y = 165 + i * 13
+            value = float(obs[i]) if len(obs) == len(INPUT_NAMES) else 0.0
+            text(self.screen, self.tiny, name, MUTED, RX + 18, y - 2, 76)
+            pygame.draw.rect(self.screen, (39, 55, 69), (RX + 96, y + 1, 46, 5), border_radius=2)
+            width = round(min(1, abs(value)) * 46)
+            if width:
+                pygame.draw.rect(self.screen, BLUE if value >= 0 else RED,
+                                 (RX + 96, y + 1, width, 5), border_radius=2)
+            text(self.screen, self.tiny, f"{value:+.2f}", TEXT, RX + 145, y - 3)
+        hovered = None
+        for i in range(16):
+            x = RX + 206 + (i % 4) * 24
+            y = 184 + (i // 4) * 34
+            value = float(hidden[i]) if len(hidden) == 16 else 0.0
+            strength = min(1, abs(value))
+            color = (int(45 + 39 * strength), int(89 + 150 * strength),
+                     int(88 + 48 * strength)) if value >= 0 else (
+                     int(92 + 135 * strength), int(70 + 55 * strength), 75)
+            pygame.draw.circle(self.screen, color, (x, y), 10)
+            if math.dist(pygame.mouse.get_pos(), (x, y)) <= 11:
+                hovered = i
+                pygame.draw.circle(self.screen, TEXT, (x, y), 12, 1)
+            text(self.screen, self.tiny, str(i + 1), BG, x - (6 if i >= 9 else 3), y - 7)
+        text(self.screen, self.tiny, "Green +   Red −", MUTED, RX + 194, 315)
+        scale = max(1.0, *(abs(float(v)) for v in outputs)) if len(outputs) == 5 else 1.0
+        for i, name in enumerate(ACTION_NAMES):
+            y = 166 + i * 31
             selected = action == i
-            pygame.draw.circle(self.screen, ORANGE if selected else BLUE, (output_x, y), 7 if selected else 5)
-            value = f" {outputs[i]:+.2f}" if len(outputs) == 5 else ""
-            text(self.screen, self.tiny, ACTION_NAMES[i] + value,
-                 ORANGE if selected else MUTED, output_x + 12, y - 7, 113)
-        if self.view == "replay":
-            text(self.screen, self.tiny, "Recorded node values and action; wire weights are not recorded.",
-                 MUTED, RX + 18, 330)
+            if selected:
+                pygame.draw.rect(self.screen, (65, 57, 43),
+                                 (RX + 314, y - 3, 208, 30), border_radius=5)
+            value = float(outputs[i]) if len(outputs) == 5 else 0.0
+            text(self.screen, self.tiny, name, ORANGE if selected else TEXT,
+                 RX + 320, y, 125)
+            text(self.screen, self.mono, f"{value:+.2f}", ORANGE if selected else MUTED,
+                 RX + 463, y - 2)
+            pygame.draw.rect(self.screen, (43, 57, 67),
+                             (RX + 320, y + 19, 190, 4), border_radius=2)
+            pygame.draw.rect(self.screen, ORANGE if selected else BLUE if value >= 0 else RED,
+                             (RX + 320, y + 19, max(2, round(abs(value) / scale * 190)), 4),
+                             border_radius=2)
+        footer = pygame.Rect(RX + 14, 329, RW - 28, 20)
+        pygame.draw.rect(self.screen, (27, 43, 55), footer, border_radius=4)
+        if hovered is not None and self.view != "replay" and len(obs) == 12 and len(hidden) == 16:
+            network = self.opponent_network if self.view == "race" and self.opponent_network else self.trainer.current_network
+            contributions = obs * network.w1[:, hovered]
+            strongest_input = int(np.argmax(np.abs(contributions)))
+            outgoing = hidden[hovered] * network.w2[hovered]
+            strongest_output = int(np.argmax(np.abs(outgoing)))
+            note = (f"H{hovered + 1}: {INPUT_NAMES[strongest_input]} {contributions[strongest_input]:+.2f}"
+                    f"  →  {ACTION_NAMES[strongest_output]} {outgoing[strongest_output]:+.2f}")
+        elif self.view == "replay":
+            note = "Replay shows recorded activity and action. Historical weights are not saved."
         elif self.algorithm == "dqn" and self.view in ("train", "compare"):
-            exploration = "explore: random action" if self.trainer.explored else "greedy: highest Q"
-            text(self.screen, self.tiny, exploration, ORANGE if self.trainer.explored else GREEN,
-                 RX + 18, 330)
+            note = ("EXPLORING · random action chosen" if self.trainer.explored else
+                    "GREEDY · highest Q value chosen") + "    ·    Hover a hidden unit for its strongest links"
         else:
-            text(self.screen, self.tiny, "Green = positive weight/activity   ·   orange = chosen action",
-                 MUTED, RX + 18, 330)
+            note = "Orange is the action taken. Hover a hidden unit for its strongest links."
+        text(self.screen, self.tiny, note, MUTED, footer.x + 6, footer.y + 3, footer.width - 12)
 
     def _metric_values(self):
+        metric = "score" if self.algorithm == "evolution" and self.chart_metric == "reward" else self.chart_metric
         rows = (self.trainer.evaluation_history[-45:]
-                if self.algorithm == "dqn" and self.chart_metric == "score"
+                if self.algorithm == "dqn" and metric == "score"
                 else self.trainer.history[-45:])
-        metric = self.chart_metric
         if metric == "score":
             values = [row["best"] for row in rows] if self.algorithm == "evolution" else [row["score"] for row in rows]
             label = "Best fitness" if self.algorithm == "evolution" else "Greedy evaluation score (every 10 episodes)"
@@ -676,25 +706,30 @@ class App:
     def _draw_chart(self):
         box(self.screen, pygame.Rect(RX, 370, RW, 240))
         text(self.screen, self.bold, "TRAINING HISTORY", TEXT, RX + 18, 384)
-        metrics = [("score", "Score"), ("progress", "Progress"),
-                   ("completion", "Laps"), ("crashes", "Crashes"),
-                   ("lap", "Lap time"), ("reward", "Reward")]
-        for i, (key, label) in enumerate(metrics):
-            self.button(label, (RX + 16 + i * 84, 414, 79, 27),
-                        lambda key=key: setattr(self, "chart_metric", key),
-                        active=self.chart_metric == key,
-                        disabled=key == "reward" and self.algorithm == "evolution")
+        metrics = [("score", "Fitness" if self.algorithm == "evolution" else "Greedy score"),
+                   ("progress", "Track progress"), ("completion", "Lap completion"),
+                   ("crashes", "Crash rate"), ("lap", "Best lap time")]
+        if self.algorithm == "dqn":
+            metrics.append(("reward", "Training reward"))
+        selected = self.chart_metric if self.chart_metric in dict(metrics) else "score"
+        position = [key for key, _ in metrics].index(selected) + 1
+        self.button("‹", (RX + 18, 415, 38, 36), lambda: self.cycle_metric(-1))
+        pygame.draw.rect(self.screen, PANEL2, (RX + 63, 415, 209, 36), border_radius=7)
+        text(self.screen, self.font, dict(metrics)[selected], TEXT, RX + 75, 422, 190)
+        self.button("›", (RX + 279, 415, 38, 36), lambda: self.cycle_metric(1))
+        text(self.screen, self.small, f"{position} / {len(metrics)} metrics", MUTED, RX + 329, 423)
         rows, values, label = self._metric_values()
-        text(self.screen, self.small, label, MUTED, RX + 18, 449)
-        plot = pygame.Rect(RX + 45, 474, RW - 64, 111)
+        valid = [v for v in values if v is not None]
+        latest = f"{valid[-1]:.1f}" if valid else "—"
+        text(self.screen, self.small, f"{label}   ·   latest {latest}", MUTED, RX + 18, 455, 505)
+        plot = pygame.Rect(RX + 49, 480, RW - 67, 102)
         pygame.draw.rect(self.screen, (15, 25, 36), plot)
         for fraction in (0, 0.5, 1):
             y = plot.bottom - fraction * plot.height
             pygame.draw.line(self.screen, (45, 60, 75), (plot.left, y), (plot.right, y))
-        valid = [v for v in values if v is not None]
         if not valid:
-            text(self.screen, self.small, "Complete runs to populate this graph.", MUTED,
-                 plot.x + 75, plot.y + 42)
+            prompt = "A finished greedy evaluation will appear here." if self.algorithm == "dqn" and selected == "score" else "Finish a run to start this graph."
+            text(self.screen, self.small, prompt, MUTED, plot.x + 74, plot.y + 40)
             return
         low, high = min(valid), max(valid)
         if low == high:
@@ -715,42 +750,54 @@ class App:
         if len(values) >= 3 and all(v is not None for v in values):
             smoothed = [float(np.mean(values[max(0, i - 9):i + 1])) for i in range(len(values))]
             pygame.draw.lines(self.screen, GREEN, False, coords(smoothed), 2)
-        if self.algorithm == "dqn" and self.chart_metric == "score" and len(values) > 1:
+        if self.algorithm == "dqn" and selected == "score" and len(values) > 1:
             best_so_far = list(np.maximum.accumulate(values))
             pygame.draw.lines(self.screen, ORANGE, False, coords(best_so_far), 2)
-            legend = "Blue: greedy eval   Green: trailing mean   Orange: saved best"
+            legend = "Each eval     10-eval mean     Best so far"
         else:
-            legend = "Blue: each run    Green: trailing 10-run mean"
-        text(self.screen, self.tiny, legend, MUTED, RX + 18, 589)
-        unit = "evaluations" if self.algorithm == "dqn" and self.chart_metric == "score" else "runs"
-        text(self.screen, self.tiny, f"{len(rows)} recent {unit}", MUTED, RX + 387, 589)
+            legend = "Each run     Trailing 10-run mean"
+        pygame.draw.line(self.screen, BLUE, (RX + 18, 595), (RX + 34, 595), 3)
+        text(self.screen, self.tiny, legend.split("     ")[0], MUTED, RX + 39, 587)
+        pygame.draw.line(self.screen, GREEN, (RX + 122, 595), (RX + 138, 595), 3)
+        text(self.screen, self.tiny, legend.split("     ")[1], MUTED, RX + 143, 587)
+        if self.algorithm == "dqn" and selected == "score":
+            pygame.draw.line(self.screen, ORANGE, (RX + 278, 595), (RX + 294, 595), 3)
+            text(self.screen, self.tiny, "Best so far", MUTED, RX + 299, 587)
+        unit = "evals" if self.algorithm == "dqn" and selected == "score" else "runs"
+        text(self.screen, self.tiny, f"{len(rows)} {unit}", MUTED, RX + 451, 587)
 
     def _draw_settings(self):
         box(self.screen, pygame.Rect(RX, 625, RW, 260))
-        text(self.screen, self.bold, "RUN STATUS & SETTINGS", TEXT, RX + 18, 638)
+        text(self.screen, self.bold, "RUN STATUS", TEXT, RX + 18, 637)
         trainer = self.trainer
         if self.algorithm == "evolution":
-            run_text = (f"Generation {trainer.generation} · {trainer.active_count}/{len(trainer.population)} driving"
-                        f" · watch E{trainer.index + 1}")
+            run_text = (f"Generation {trainer.generation}  ·  {trainer.active_count}/{len(trainer.population)} driving"
+                        f"  ·  E{trainer.index + 1} selected")
             extra = (f"Best fitness {trainer.best_score:.1f}" if math.isfinite(trainer.best_score)
                      else "Loaded AI; untested here" if trainer.best_network else "No finished car yet")
         else:
-            run_text = f"Episode {trainer.episode} · ε {trainer.epsilon:.2f} · memory {len(trainer.memory)}"
+            run_text = f"Episode {trainer.episode}  ·  ε {trainer.epsilon:.2f}  ·  {len(trainer.memory)} memories"
             extra = (f"Best greedy {trainer.best_score:.1f}" if math.isfinite(trainer.best_score)
                      else "Loaded AI; untested here" if trainer.best_network
                      else "Greedy eval every 10 runs")
-        text(self.screen, self.small, run_text, GREEN, RX + 18, 662)
-        text(self.screen, self.small, extra, MUTED, RX + 315, 662, 205)
+        text(self.screen, self.small, run_text, GREEN, RX + 18, 662, 328)
+        text(self.screen, self.small, extra, TEXT, RX + 352, 662, 169)
         car = trainer.car if self.view in ("train", "compare") else self.opponent if self.view == "race" else None
         if car:
             progress = min(100, car.max_progress / self.track.total_length * 100)
-            status = f"Lap {car.laps}  ·  gate {car.next_gate + 1}/{len(self.track.checkpoints)}  ·  progress {progress:.0f}%"
+            status = f"Lap {car.laps}  ·  next gate {car.next_gate + 1}/{len(self.track.checkpoints)}"
         elif self.view == "replay" and self.replay:
+            progress = self.replay_index / max(1, len(self.replay["frames"]) - 1) * 100
             status = f"Replay frame {self.replay_index + 1}/{len(self.replay['frames'])}"
         else:
+            progress = 0
             status = "Shared track, sensors, physics, and scoring"
-        text(self.screen, self.small, status, TEXT, RX + 18, 684)
-        pygame.draw.line(self.screen, BORDER, (RX + 18, 710), (RX + RW - 18, 710))
+        text(self.screen, self.small, status, MUTED, RX + 18, 685, 382)
+        text(self.screen, self.mono, f"{progress:.0f}%", GREEN, RX + 471, 683)
+        pygame.draw.rect(self.screen, (35, 53, 66), (RX + 18, 708, RW - 36, 5), border_radius=3)
+        if progress:
+            pygame.draw.rect(self.screen, GREEN, (RX + 18, 708, round((RW - 36) * progress / 100), 5), border_radius=3)
+        text(self.screen, self.tiny, "TRAINING SETTINGS", BLUE, RX + 18, 719)
         rows = [("Seed", "seed", "Same random start for a repeatable run"),
                 ("Max steps", "max_steps", "Time limit per car or episode")]
         if self.algorithm == "evolution":
@@ -761,20 +808,22 @@ class App:
                      ("Explore decay", "epsilon_decay", "How quickly random actions fade"),
                      ("Batch size", "batch_size", "Past steps used for each update")]
         for i, (label, attr, hint) in enumerate(rows):
-            y = 717 + i * 31
+            y = 740 + i * 28
             value = getattr(self.settings, attr)
             shown = f"{value:.4f}" if isinstance(value, float) else str(value)
-            text(self.screen, self.small, label, TEXT, RX + 18, y)
-            text(self.screen, self.tiny, hint, MUTED, RX + 131, y + 2, 245)
-            self.button("−", (RX + 410, y - 2, 29, 25),
+            text(self.screen, self.small, label, TEXT, RX + 18, y + 3)
+            text(self.screen, self.tiny, hint, MUTED, RX + 141, y + 5, 199)
+            self.button("−", (RX + 352, y, 32, 28),
                         lambda attr=attr: self.change_setting(attr, -1),
                         disabled=self.view not in ("train", "compare"))
-            text(self.screen, self.small, shown, GREEN, RX + 446, y, 45)
-            self.button("+", (RX + 494, y - 2, 29, 25),
+            pygame.draw.rect(self.screen, PANEL2, (RX + 391, y, 89, 28), border_radius=6)
+            rendered = self.mono.render(shown, True, GREEN)
+            self.screen.blit(rendered, rendered.get_rect(center=(RX + 435, y + 14)))
+            self.button("+", (RX + 488, y, 32, 28),
                         lambda attr=attr: self.change_setting(attr, 1),
                         disabled=self.view not in ("train", "compare"))
-        text(self.screen, self.tiny, "Changing a setting restarts training in both modes.",
-             MUTED, RX + 18, 860)
+        if self.algorithm == "evolution":
+            text(self.screen, self.tiny, "Changing a setting restarts both learners.", MUTED, RX + 18, 858)
 
     def _draw_bottom(self):
         box(self.screen, pygame.Rect(20, 739, 900, 146))

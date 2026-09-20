@@ -96,3 +96,21 @@ def test_named_training_tabs_and_compare_inspector_are_clickable(workbench):
     workbench.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
                                              {"button": 1, "pos": (RX + 460, 104)}))
     assert workbench.algorithm == "dqn"
+
+
+def test_metric_selector_cycles_valid_metrics_in_each_training_mode(workbench):
+    workbench.draw()
+    workbench.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
+                                             {"button": 1, "pos": (RX + 298, 433)}))
+    assert workbench.chart_metric == "progress"
+    workbench.cycle_metric(-1)
+    assert workbench.chart_metric == "score"
+    workbench.cycle_metric(-1)
+    assert workbench.chart_metric == "lap"
+    workbench.select_algorithm("dqn")
+    workbench.cycle_metric(1)
+    assert workbench.chart_metric == "reward"
+    workbench.select_algorithm("evolution")
+    workbench.cycle_metric(1)
+    assert workbench.chart_metric == "progress"
+    workbench.draw()
