@@ -2,7 +2,7 @@ import pygame
 import pytest
 
 from racing_lab import app as app_module
-from racing_lab.app import App
+from racing_lab.app import App, RX
 from racing_lab.track import Track
 
 
@@ -65,3 +65,34 @@ def test_replay_round_trip_and_step_controls(workbench, monkeypatch, tmp_path):
     assert workbench.replay["frames"]
     assert workbench.track.name == "Foundry Loop"
     workbench.draw()
+
+
+def test_compare_view_advances_both_algorithms_and_switches_inspector(workbench):
+    workbench.start_compare()
+    workbench.tick()
+    evolution = workbench.trainers["evolution"]
+    dqn = workbench.trainers["dqn"]
+    assert all(car.steps == 1 for car in evolution.cars)
+    assert dqn.car.steps == 1
+    workbench.focus_evolution(2)
+    assert evolution.index == 2
+    assert workbench._world_frame() is evolution.traces[2][-1]
+    workbench.algorithm = "dqn"
+    assert workbench._world_frame() is dqn.frames[-1]
+    workbench.draw()
+
+
+def test_named_training_tabs_and_compare_inspector_are_clickable(workbench):
+    workbench.draw()
+    workbench.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
+                                             {"button": 1, "pos": (420, 39)}))
+    assert workbench.view == "train" and workbench.algorithm == "dqn"
+    workbench.draw()
+    workbench.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
+                                             {"button": 1, "pos": (855, 39)}))
+    assert workbench.view == "compare"
+    workbench.algorithm = "evolution"
+    workbench.draw()
+    workbench.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
+                                             {"button": 1, "pos": (RX + 460, 104)}))
+    assert workbench.algorithm == "dqn"

@@ -13,6 +13,8 @@ The **deployable DQN score** is from a separate greedy evaluation, with ε set e
 
 Evolution also has variance: a single generation's best car is not a generalization guarantee. Both scores are **on the training track**. The alternate Harbor Loop is included so you can test transfer. Do not compare these scores as proof that one algorithm is universally stronger; the run budgets and search methods differ.
 
+The later multi-car UI update advances an entire evolution generation concurrently for display. It does not change each policy's physics or score: generations 1–3 still produced best scores 393.5, 398.9, and 421.7 with the original seed and settings. The Compare models tab likewise shows both methods at once but does not equalize how many car steps they consume.
+
 The raw series are [evolution-benchmark.csv](results/evolution-benchmark.csv) and [dqn-eval-benchmark.csv](results/dqn-eval-benchmark.csv). The DQN CSV distinguishes `completion` from `eval_completion`; `eval_score` is filled only every tenth episode. Reproduce the experiments with:
 
 ```powershell

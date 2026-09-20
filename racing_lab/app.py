@@ -15,6 +15,7 @@ from .learning import DQNTrainer, EvolutionTrainer, Settings
 from .network import Network
 from .simulation import ACTION_NAMES, INPUT_NAMES, SENSOR_ANGLES, Car
 from .track import Track, WORLD_H, WORLD_W, default_track
+from .visuals import CarPainter
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,6 +38,8 @@ GREEN = (81, 222, 152)
 BLUE = (100, 181, 247)
 ORANGE = (255, 181, 89)
 RED = (255, 106, 110)
+EVOLUTION_COLORS = ((112, 175, 249), (177, 139, 237), (95, 203, 202),
+                    (242, 173, 102), (147, 197, 132), (218, 138, 171))
 
 
 def text(surface, font, message, color, x, y, max_width=None):
@@ -63,6 +66,7 @@ class App:
         self.tiny = pygame.font.SysFont("segoeui", 12)
         self.title = pygame.font.SysFont("segoeui", 24, bold=True)
         self.bold = pygame.font.SysFont("segoeui", 16, bold=True)
+        self.car_painter = CarPainter()
         self.track = default_track()
         self.settings = Settings()
         self.trainers = {"evolution": EvolutionTrainer(self.track, self.settings),
@@ -126,6 +130,25 @@ class App:
         self.paused = False
         self.status("Evolution selects and mutates policies." if algorithm == "evolution"
                     else "DQN learns action values from replayed experience.")
+
+    def start_compare(self):
+        self.view = "compare"
+        self.paused = False
+        self.status("Both learners now advance together. Select a model to inspect its decisions.")
+
+    def current_speed(self) -> int:
+        if self.view == "compare":
+            return (1, 2, 5, 12)[self.speed_index]
+        if self.view == "train" and self.algorithm == "evolution":
+            return (1, 3, 8, 20)[self.speed_index]
+        return self.speeds[self.speed_index]
+
+    def focus_evolution(self, delta: int) -> None:
+        population = self.trainers["evolution"]
+        population.focus((population.index + delta) % len(population.population))
+        if self.view == "compare":
+            self.algorithm = "evolution"
+        self.status(f"Inspecting evolution model E{population.index + 1}.")
 
     def start_race(self):
         self.view = "race"
@@ -336,9 +359,13 @@ class App:
     def tick(self):
         if self.paused:
             return
-        if self.view == "train":
-            for _ in range(self.speeds[self.speed_index]):
-                self.trainer.tick()
+        if self.view in ("train", "compare"):
+            for _ in range(self.current_speed()):
+                if self.view == "compare":
+                    self.trainers["evolution"].tick()
+                    self.trainers["dqn"].tick()
+                else:
+                    self.trainer.tick()
         elif self.view == "race" and self.human and self.opponent:
             keys = pygame.key.get_pressed()
             if keys[pygame.K_DOWN] or keys[pygame.K_s]:
@@ -370,18 +397,65 @@ class App:
             return self.replay["frames"][self.replay_index]
         if self.view == "race":
             return self.race_frame
-        if self.view == "train":
+        if self.view in ("train", "compare"):
             return self.trainer.frames[-1]
         return None
 
-    def _draw_car(self, surface, x, y, angle, color, label=None, crashed=False):
-        c, s = math.cos(angle), math.sin(angle)
-        points = [(x + a * c - b * s, y + a * s + b * c)
-                  for a, b in ((16, 0), (-11, 9), (-7, 0), (-11, -9))]
-        pygame.draw.polygon(surface, RED if crashed else color, points)
-        pygame.draw.polygon(surface, (8, 15, 24), points, 2)
+    def _draw_car(self, surface, x, y, angle, color, label=None, crashed=False, alpha=255):
+        self.car_painter.draw(surface, x, y, angle, color, alpha, crashed)
         if label:
             text(surface, self.small, label, color, x - 12, y - 35)
+
+    def _draw_model_garage(self, world, frame):
+        if self.view not in ("train", "compare"):
+            return
+        panel = pygame.Surface((390, 174), pygame.SRCALPHA)
+        pygame.draw.rect(panel, (13, 27, 38, 237), panel.get_rect(), border_radius=13)
+        pygame.draw.rect(panel, (65, 87, 100, 245), panel.get_rect(), 1, border_radius=13)
+        world.blit(panel, (254, 294))
+        selected = (f"EVOLUTION MODEL E{self.trainers['evolution'].index + 1}"
+                    if self.algorithm == "evolution" else "RL ONLINE MODEL")
+        color = ORANGE if self.algorithm == "evolution" else GREEN
+        text(world, self.bold, "MODEL GARAGE", TEXT, 272, 306)
+        text(world, self.tiny, selected, color, 272, 329)
+        self.car_painter.draw_preview(world, (324, 390), color,
+                                      bool(frame and frame.get("crashed")))
+        text(world, self.tiny, "REAR", MUTED, 271, 432)
+        text(world, self.tiny, "FRONT →", MUTED, 326, 432)
+        pygame.draw.line(world, BORDER, (386, 329), (386, 444))
+        if self.view == "compare" or self.algorithm == "evolution":
+            evolution = self.trainers["evolution"]
+            ranked = sorted(range(len(evolution.cars)),
+                            key=lambda i: evolution.cars[i].max_progress, reverse=True)
+            shown = [evolution.index] + [i for i in ranked if i != evolution.index][:2]
+            for row, i in enumerate(shown):
+                car = evolution.cars[i]
+                label = f"E{i + 1:02d}  {car.max_progress / self.track.total_length * 100:4.0f}%"
+                state = "CRASH" if car.crashed else "DONE" if car.done else "DRIVING"
+                y = 336 + row * 25
+                pygame.draw.circle(world, ORANGE if i == evolution.index else
+                                   EVOLUTION_COLORS[i % len(EVOLUTION_COLORS)], (405, y + 6), 5)
+                text(world, self.small, label, TEXT, 417, y, 105)
+                text(world, self.tiny, state, RED if car.crashed else MUTED, 543, y + 3)
+            if self.view == "compare":
+                learner = self.trainers["dqn"].car
+                pygame.draw.circle(world, GREEN, (405, 417), 5)
+                text(world, self.small, f"RL   {learner.max_progress / self.track.total_length * 100:4.0f}%",
+                     TEXT, 417, 411)
+                text(world, self.tiny, "LEARNING", MUTED, 543, 414)
+            else:
+                text(world, self.tiny, f"{evolution.active_count} of {len(evolution.cars)} still driving",
+                     MUTED, 402, 418)
+        else:
+            learner = self.trainers["dqn"]
+            text(world, self.small, f"Episode {learner.episode} · ε {learner.epsilon:.2f}", TEXT, 402, 342)
+            text(world, self.small, "Online: learns each batch", MUTED, 402, 369)
+            text(world, self.small, "Target: copied every 400 steps", MUTED, 402, 396)
+            text(world, self.small, "Best: greedy evaluated policy", MUTED, 402, 423)
+        action = frame.get("action") if frame else None
+        action_text = ACTION_NAMES[action] if isinstance(action, int) else "waiting"
+        text(world, self.tiny, f"7 RAYS  →  12 INPUTS  →  5 ACTIONS     NOW: {action_text}",
+             MUTED, 272, 450, 355)
 
     def _draw_editor_world(self, surface):
         pts = [(round(x), round(y)) for x, y in self.editor_points]
@@ -432,13 +506,27 @@ class App:
                 pygame.draw.circle(world, (45, 61, 71), point, int(self.track.width / 2))
             pygame.draw.lines(world, (45, 61, 71), True, points, int(self.track.width))
             for i, (x, y, tx, ty, _) in enumerate(self.track.checkpoints):
-                next_gate = self.trainer.car.next_gate if self.view == "train" else None
+                next_gate = self.trainer.car.next_gate if self.view in ("train", "compare") else None
                 color = ORANGE if i == 0 else GREEN if i == next_gate else (68, 91, 101)
                 a = (x - ty * self.track.width / 2, y + tx * self.track.width / 2)
                 b = (x + ty * self.track.width / 2, y - tx * self.track.width / 2)
                 pygame.draw.line(world, color, a, b, 3 if i == next_gate or i == 0 else 1)
                 if i == 0:
                     text(world, self.small, "START / FINISH", ORANGE, x + 10, y + 16)
+
+            if (self.view == "compare" or
+                    self.view == "train" and self.algorithm == "evolution"):
+                evolution = self.trainers["evolution"]
+                for i, car in enumerate(evolution.cars):
+                    if self.algorithm == "evolution" and i == evolution.index:
+                        continue  # Draw the inspected driver over the other cars.
+                    color = EVOLUTION_COLORS[i % len(EVOLUTION_COLORS)]
+                    self._draw_car(world, car.x, car.y, car.angle, color,
+                                   crashed=car.crashed, alpha=75 if car.done else 190)
+            if self.view == "compare" and self.algorithm != "dqn":
+                learner = self.trainers["dqn"].car
+                self._draw_car(world, learner.x, learner.y, learner.angle,
+                               GREEN, "RL", learner.crashed, alpha=225)
 
             frame = self._world_frame()
             if frame:
@@ -451,37 +539,64 @@ class App:
                     end = (x + ray_length * math.cos(theta), y + ray_length * math.sin(theta))
                     pygame.draw.line(world, GREEN if i == 3 else (95, 178, 206), (x, y), end, 2)
                     pygame.draw.circle(world, ORANGE, (round(end[0]), round(end[1])), 3)
-                self._draw_car(world, x, y, angle, GREEN, "AI" if self.view == "race" else None,
+                selected_color = (ORANGE if self.algorithm == "evolution" and self.view in ("train", "compare")
+                                  else GREEN)
+                selected_label = ("AI" if self.view == "race" else
+                                  f"E{self.trainers['evolution'].index + 1}" if self.algorithm == "evolution"
+                                  else "RL")
+                self._draw_car(world, x, y, angle, selected_color, selected_label,
                                frame.get("crashed", False))
                 if frame.get("crashed"):
                     text(world, self.bold, "CRASH", RED, x + 18, y - 24)
             if self.view == "race" and self.human:
                 self._draw_car(world, self.human.x, self.human.y, self.human.angle,
                                ORANGE, "YOU", self.human.crashed)
+            if self.view in ("train", "compare"):
+                evolution = self.trainers["evolution"]
+                label = (f"EVOLUTION: {evolution.active_count}/{len(evolution.cars)} cars driving together"
+                         if self.view == "train" and self.algorithm == "evolution" else
+                         f"COMPARE: {evolution.active_count} evolution cars + 1 RL learner"
+                         if self.view == "compare" else
+                         "REINFORCEMENT LEARNING: online policy driving")
+                pygame.draw.rect(world, (14, 27, 36), (13, 13, 399, 37), border_radius=7)
+                text(world, self.small, label, TEXT, 26, 21)
+                self._draw_model_garage(world, frame)
         self.screen.blit(world, (OX, OY))
 
     def _draw_header(self):
         text(self.screen, self.title, "RACING ML LAB", TEXT, 22, 17)
         text(self.screen, self.small, "LEARN THE DRIVER, INSPECT THE DECISION", MUTED, 23, 47)
-        self.button("Evolution", (430, 18, 135, 42),
-                    lambda: self.select_algorithm("evolution"), active=self.view == "train" and self.algorithm == "evolution")
-        self.button("DQN", (575, 18, 105, 42),
+        self.button("Reinforcement learning", (329, 18, 208, 42),
                     lambda: self.select_algorithm("dqn"), active=self.view == "train" and self.algorithm == "dqn")
-        self.button("Race AI", (690, 18, 115, 42), self.start_race,
+        self.button("Evolution over generations", (545, 18, 236, 42),
+                    lambda: self.select_algorithm("evolution"), active=self.view == "train" and self.algorithm == "evolution")
+        self.button("Compare models", (789, 18, 134, 42), self.start_compare,
+                    active=self.view == "compare")
+        self.button("Race AI", (931, 18, 91, 42), self.start_race,
                     active=self.view == "race")
-        self.button("Track editor", (815, 18, 130, 42), self.start_editor,
+        self.button("Track editor", (1030, 18, 110, 42), self.start_editor,
                     active=self.view == "editor")
-        self.button("Replay", (955, 18, 110, 42), self.replay_best,
+        self.button("Replay", (1148, 18, 80, 42), self.replay_best,
                     active=self.view == "replay")
-        self.button("How it works", (1075, 18, 145, 42),
+        self.button("How it works", (1236, 18, 115, 42),
                     lambda: setattr(self, "view", "guide"), active=self.view == "guide")
-        text(self.screen, self.small, "LOCAL ONLY", GREEN, 1350, 30)
+        text(self.screen, self.tiny, "LOCAL ONLY", GREEN, 1381, 30)
 
     def _draw_inspector(self):
         rect = pygame.Rect(RX, 83, RW, 273)
         box(self.screen, rect)
         text(self.screen, self.bold, "LIVE DECISION", TEXT, RX + 18, 96)
-        subtitle = "Policy scores → highest wins" if self.algorithm == "evolution" else "Q values → greedy or explore"
+        if self.view == "compare":
+            self.button("Inspect evolution", (RX + 268, 92, 128, 26),
+                        lambda: setattr(self, "algorithm", "evolution"),
+                        active=self.algorithm == "evolution")
+            self.button("Inspect RL", (RX + 404, 92, 115, 26),
+                        lambda: setattr(self, "algorithm", "dqn"),
+                        active=self.algorithm == "dqn")
+        subtitle = (f"Watching evolution car E{self.trainers['evolution'].index + 1} · policy scores"
+                    if self.algorithm == "evolution" and self.view in ("train", "compare") else
+                    "Q values → greedy or explore" if self.algorithm == "dqn" else
+                    "Policy scores → highest wins")
         text(self.screen, self.small, subtitle, MUTED, RX + 18, 119)
         frame = self._world_frame() or {}
         obs = np.asarray(frame.get("observation", []), dtype=float)
@@ -525,7 +640,7 @@ class App:
         if self.view == "replay":
             text(self.screen, self.tiny, "Recorded node values and action; wire weights are not recorded.",
                  MUTED, RX + 18, 330)
-        elif self.algorithm == "dqn" and self.view == "train":
+        elif self.algorithm == "dqn" and self.view in ("train", "compare"):
             exploration = "explore: random action" if self.trainer.explored else "greedy: highest Q"
             text(self.screen, self.tiny, exploration, ORANGE if self.trainer.explored else GREEN,
                  RX + 18, 330)
@@ -615,7 +730,8 @@ class App:
         text(self.screen, self.bold, "RUN STATUS & SETTINGS", TEXT, RX + 18, 638)
         trainer = self.trainer
         if self.algorithm == "evolution":
-            run_text = f"Generation {trainer.generation} · car {trainer.index + 1}/{len(trainer.population)}"
+            run_text = (f"Generation {trainer.generation} · {trainer.active_count}/{len(trainer.population)} driving"
+                        f" · watch E{trainer.index + 1}")
             extra = (f"Best fitness {trainer.best_score:.1f}" if math.isfinite(trainer.best_score)
                      else "Loaded AI; untested here" if trainer.best_network else "No finished car yet")
         else:
@@ -625,7 +741,7 @@ class App:
                      else "Greedy eval every 10 runs")
         text(self.screen, self.small, run_text, GREEN, RX + 18, 662)
         text(self.screen, self.small, extra, MUTED, RX + 315, 662, 205)
-        car = trainer.car if self.view == "train" else self.opponent if self.view == "race" else None
+        car = trainer.car if self.view in ("train", "compare") else self.opponent if self.view == "race" else None
         if car:
             progress = min(100, car.max_progress / self.track.total_length * 100)
             status = f"Lap {car.laps}  ·  gate {car.next_gate + 1}/{len(self.track.checkpoints)}  ·  progress {progress:.0f}%"
@@ -652,20 +768,20 @@ class App:
             text(self.screen, self.tiny, hint, MUTED, RX + 131, y + 2, 245)
             self.button("−", (RX + 410, y - 2, 29, 25),
                         lambda attr=attr: self.change_setting(attr, -1),
-                        disabled=self.view != "train")
+                        disabled=self.view not in ("train", "compare"))
             text(self.screen, self.small, shown, GREEN, RX + 446, y, 45)
             self.button("+", (RX + 494, y - 2, 29, 25),
                         lambda attr=attr: self.change_setting(attr, 1),
-                        disabled=self.view != "train")
+                        disabled=self.view not in ("train", "compare"))
         text(self.screen, self.tiny, "Changing a setting restarts training in both modes.",
              MUTED, RX + 18, 860)
 
     def _draw_bottom(self):
         box(self.screen, pygame.Rect(20, 739, 900, 146))
-        if self.view == "train":
+        if self.view in ("train", "compare"):
             self.button("Pause" if not self.paused else "Resume", (36, 755, 90, 38),
                         lambda: setattr(self, "paused", not self.paused), accent=True)
-            self.button(f"Speed ×{self.speeds[self.speed_index]}", (133, 755, 100, 38),
+            self.button(f"Speed ×{self.current_speed()}", (133, 755, 100, 38),
                         lambda: setattr(self, "speed_index", (self.speed_index + 1) % len(self.speeds)))
             self.button("Reset training", (240, 755, 115, 38), self.reset_trainers)
             self.button("Save model", (362, 755, 105, 38), self.save_model)
@@ -673,12 +789,30 @@ class App:
             self.button("Best replay", (586, 755, 100, 38), self.replay_best)
             self.button("Last replay", (693, 755, 100, 38), self.replay_last)
             self.button("Save replay", (800, 755, 104, 38), self.save_replay)
-            text(self.screen, self.small,
-                 "Evolution: best policies reproduce. DQN: random exploration fades as Q values improve.",
-                 MUTED, 38, 806)
-            text(self.screen, self.small,
-                 "Tip: run at ×40 or ×120, then slow to ×1 to inspect decisions. Space pauses.",
-                 MUTED, 38, 830)
+            if self.view == "compare" or self.algorithm == "evolution":
+                evolution = self.trainers["evolution"]
+                self.button("← Watch car", (36, 804, 118, 32),
+                            lambda: self.focus_evolution(-1))
+                self.button("Watch car →", (163, 804, 118, 32),
+                            lambda: self.focus_evolution(1))
+                text(self.screen, self.small,
+                     f"Model E{evolution.index + 1} · {evolution.active_count} active · "
+                     "click a car on the track to inspect it", MUTED, 300, 810, 590)
+                if self.view == "compare":
+                    text(self.screen, self.small,
+                         "Same track; each evolution tick advances every car, so sample budgets differ.",
+                         MUTED, 38, 837)
+                else:
+                    text(self.screen, self.small,
+                         "Every colored car is a separate neural network in the same generation.",
+                         MUTED, 38, 837)
+            else:
+                text(self.screen, self.small,
+                     "This tab follows the DQN online policy; ε marks random exploratory decisions.",
+                     MUTED, 38, 807)
+                text(self.screen, self.small,
+                     "Use Compare models to train DQN beside the evolution population. Space pauses.",
+                     MUTED, 38, 832)
         elif self.view == "race":
             self.button("Restart race", (36, 755, 130, 38), self.start_race, accent=True)
             self.button("Pause" if not self.paused else "Resume", (176, 755, 110, 38),
@@ -752,8 +886,9 @@ class App:
             ("2  DECIDE", "The network transforms inputs through 16 hidden neurons into five action values."),
             ("3  ACT", "The car steers, accelerates, coasts, or brakes under shared physics."),
             ("4  FEEDBACK", "New forward progress and ordered gates earn credit; crashes and time cost points."),
-            ("EVOLUTION", "Many fixed networks drive. The best copy and mutate for the next generation."),
+            ("EVOLUTION", "A whole generation drives together. Select a car to inspect its own network."),
             ("DQN", "One network learns action values from past steps; exploration slowly decreases."),
+            ("COMPARE", "Watch both methods train on the same course at the same time."),
             ("EVALUATE", "Compare on a track the learner has not trained on. Training score alone can mislead."),
         ]
         for i, (heading, body) in enumerate(lines):
@@ -842,6 +977,28 @@ class App:
             except ValueError as exc:
                 self.status(str(exc))
 
+    def _select_car_on_track(self, position):
+        x, y = position[0] - OX, position[1] - OY
+        if not (0 <= x < WORLD_W and 0 <= y < WORLD_H):
+            return
+        evolution = self.trainers["evolution"]
+        candidates = sorted(((math.dist((x, y), (car.x, car.y)), i)
+                             for i, car in enumerate(evolution.cars)))
+        if self.view == "compare":
+            learner = self.trainers["dqn"].car
+            learner_distance = math.dist((x, y), (learner.x, learner.y))
+            if learner_distance < 20 and learner_distance + 4 < candidates[0][0]:
+                self.algorithm = "dqn"
+                self.status("Inspecting the reinforcement learning driver.")
+                return
+        nearby = [i for distance, i in candidates if distance < 20]
+        if nearby:
+            selected = (nearby[(nearby.index(evolution.index) + 1) % len(nearby)]
+                        if evolution.index in nearby and len(nearby) > 1 else nearby[0])
+            evolution.focus(selected)
+            self.algorithm = "evolution"
+            self.status(f"Inspecting evolution model E{selected + 1}.")
+
     def handle_event(self, event):
         if event.type == pygame.QUIT:
             return False
@@ -853,6 +1010,9 @@ class App:
                         return True
             if self.view == "editor":
                 self._editor_click(event.pos, event.button)
+            elif event.button == 1 and (self.view == "compare" or
+                                       self.view == "train" and self.algorithm == "evolution"):
+                self._select_car_on_track(event.pos)
         if event.type == pygame.MOUSEMOTION and self.view == "editor" and self.dragging:
             x, y = event.pos[0] - OX, event.pos[1] - OY
             margin = self.editor_width / 2 + 12
@@ -862,7 +1022,7 @@ class App:
         if event.type == pygame.MOUSEBUTTONUP:
             self.dragging = False
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE and self.view in ("train", "race", "replay"):
+            if event.key == pygame.K_SPACE and self.view in ("train", "compare", "race", "replay"):
                 self.paused = not self.paused
             elif event.key == pygame.K_ESCAPE and self.view != "train":
                 self.view = "train"

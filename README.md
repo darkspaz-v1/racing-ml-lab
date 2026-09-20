@@ -2,9 +2,9 @@
 
 A local Python desktop simulation for learning **how a car learns**. Watch a 2D driver read sensor rays, choose an action, hit a wall or pass an ordered gate, and improve across runs. Train two independent learners on the same course: an evolutionary neural network and a Deep Q Network (DQN). The app runs locally and has no network connection or GitHub publishing step.
 
-![The Racing ML Lab workbench](assets/workbench.png)
+![Evolution population and reinforcement learning driver together](assets/compare.png)
 
-![DQN greedy evaluation score after training](assets/dqn-learning.png)
+[Evolution training view](assets/workbench.png) · [DQN learning curve](assets/dqn-learning.png)
 
 ## Start here
 
@@ -19,7 +19,7 @@ python -m venv .venv
 
 On macOS or Linux, replace `.\.venv\Scripts\python.exe` with `./.venv/bin/python`. The display is 1500 × 900 pixels. The only runtime dependencies are NumPy and pygame-ce; `pytest` is needed for the tests.
 
-Start on **Evolution**, choose speed ×40 or ×120, and watch several generations. Switch to **DQN** and let it run longer: its initial random exploration is deliberate. Return to speed ×1 to see the rays, hidden neurons, scores, and selected action at each step. Use **How it works** for an in-app summary.
+Start on **Evolution over generations** to see all 24 candidate cars driving at once. Click a car on the track or use **Watch car** to inspect its own sensors and network. **Reinforcement learning** trains the DQN driver; its initial random exploration is deliberate. **Compare models** advances both methods together on the same track, with an inspector switch for choosing which network to study. One evolution tick advances the whole population, so the side-by-side animation does **not** give the algorithms equal experience budgets. Return to speed ×1 to see each decision. Use **How it works** for an in-app summary.
 
 ## The system at a glance
 
@@ -57,13 +57,14 @@ The DQN reward for each step is `0.025 × new distance + 4 × crossed gate + 40 
 | Update | Copy two elites; mutate selected parents | Sample a batch, calculate target Q values, backpropagate |
 | Typical pace here | Several generations can produce laps | Hundreds of episodes may be needed |
 
-Evolution starts with random networks. After every car in a generation finishes, it keeps the top two unchanged. The rest are mutations of networks selected from the best quarter. This is a deliberately simple genetic algorithm: there is no crossover, and the full neural-network weights are the genome.
+Evolution starts with random networks. **All cars in a generation advance together**, with separate observations, actions, crashes, and lap progress. You can watch any one of them without changing how the others train. After every car finishes, the top two networks are kept unchanged. The rest are mutations of networks selected from the best quarter. This is a deliberately simple genetic algorithm: there is no crossover, and the full neural-network weights are the genome.
 
 DQN stores `(state, action, reward, next state, done)` after each step. Every fourth step, it samples old transitions, computes a target from a periodically copied **target network**, and updates the online network with a clipped-error gradient. It discounts future rewards by 0.97. ε begins at 1, multiplies by 0.997 after each episode, and stops at 0.05. Every tenth episode is followed by a separate **greedy evaluation** without random actions or weight updates. The saved "best" network and replay come from these evaluations, so a lucky exploratory episode cannot masquerade as a capable deployable driver. At the default settings, DQN may take roughly 600 or more episodes to complete laps. That is a learning curve, not an app freeze. The chart is more useful than a single lucky run.
 
 ### Reading the dashboard
 
-- **Track:** blue/green rays measure wall distance, orange dots mark where rays end, green marks the next gate, and red marks a crash.
+- **Track:** each colored top-down car is a separate evolution policy. The orange car is the one currently being inspected; the green car is the DQN learner in Compare models. Blue/green rays measure the inspected car's wall distance, orange dots mark where rays end, green marks the next gate, and red marks a crash. Every car has the same physics and start position.
+- **Model garage:** a magnified view of the inspected car, the current driving action, and a small live roster of other cars and their progress. This is a larger view of the actual Pygame car artwork; its body aligns with the simulation's collision box.
 - **Network:** the left column is the 12 sensor inputs, the middle is 16 hidden activations, and the right is the five action values. Green/red wires indicate the signs of current weights during training. Replay shows recorded activations and actions; its wire colors are neutral because weights at every replay frame are not stored.
 - **Training history:** blue is each generation or episode; green is a trailing 10-run mean. DQN's score chart uses greedy evaluations every tenth episode, with an orange line for the best saved checkpoint; its other charts show exploratory training episodes. Select score, progress, lap completion, crash rate, best lap time, or DQN reward. An empty lap-time graph means no completed lap yet. DQN can improve and later regress, which is why the best evaluated network is saved separately.
 - **Run status:** current generation/car or episode/ε/replay-memory size, progress, gates, and learning settings. Changing a setting resets both learners so subsequent comparisons use the same track and seed.
@@ -106,6 +107,7 @@ See [the measured baseline experiment](docs/experiment-notes.md) for raw results
 | `racing_lab/network.py` | Forward pass, mutation, DQN backpropagation, model storage |
 | `racing_lab/learning.py` | Evolutionary selection, DQN replay buffer, target network |
 | `racing_lab/app.py` | Pygame UI, live graphs, editor, races, and replay controls |
+| `racing_lab/visuals.py` | Cached top-down car artwork used for individual and population views |
 | `scripts/benchmark.py` | Reproducible training outside the graphical app |
 | `tests/test_simulation.py` | Behavioral checks for the rules that matter most |
 

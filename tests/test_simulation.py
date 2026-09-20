@@ -111,6 +111,22 @@ def test_trainers_change_their_networks_and_capture_replays(track):
     assert dqn.best_replay["label"].startswith("Greedy evaluation")
 
 
+def test_evolution_population_runs_together_and_focus_is_independent(track):
+    trainer = EvolutionTrainer(track, Settings(seed=5, population=8, max_steps=90))
+    trainer.tick()
+    assert [car.steps for car in trainer.cars] == [1] * 8
+    first_frame = trainer.traces[0][-1]
+    trainer.focus(4)
+    assert trainer.car is trainer.cars[4]
+    assert trainer.frames is trainer.traces[4]
+    assert trainer.traces[0][-1] is first_frame
+    while trainer.generation == 1:
+        trainer.tick()
+    assert len(trainer.history) == 1
+    assert len(trainer.cars) == 8
+    assert all(car.steps == 0 for car in trainer.cars)
+
+
 def test_seed_repeats_same_initial_driver(track):
     settings = Settings(seed=32)
     a, b = EvolutionTrainer(track, settings), EvolutionTrainer(track, settings)

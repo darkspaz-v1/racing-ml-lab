@@ -37,8 +37,7 @@ class EvolutionTrainer:
         self.index = 0
         self.results: list[tuple[float, Network, bool, bool, float | None, float]] = []
         self.history: list[dict] = []
-        self.car = Car(track, settings.max_steps)
-        self.frames = [self.car.snapshot()]
+        self._start_generation()
         self.last_replay: dict | None = None
         self.best_replay: dict | None = None
         self.best_network: Network | None = None
@@ -54,38 +53,64 @@ class EvolutionTrainer:
     def current_network(self) -> Network:
         return self.population[self.index]
 
-    def tick(self) -> None:
-        observation = self.car.observation()
-        hidden, outputs = self.current_network.forward(observation)
-        action = int(np.argmax(outputs))
-        result = self.car.step(action)
-        self.last_observation, self.last_hidden = observation, hidden
-        self.last_outputs, self.last_action = outputs, action
-        self.last_reward = result.reward
-        self.frames.append(self.car.snapshot(observation, hidden, outputs, action))
-        if result.done:
-            self._finish_candidate()
+    @property
+    def car(self) -> Car:
+        return self.cars[self.index]
 
-    def _finish_candidate(self) -> None:
-        score = self.car.score()
-        lap_time = min(self.car.lap_times) if self.car.lap_times else None
-        self.results.append((score, self.current_network.copy(), self.car.laps > 0,
-                             self.car.crashed, lap_time,
-                             min(1.0, self.car.max_progress / self.track.total_length)))
+    @property
+    def frames(self) -> list[dict]:
+        return self.traces[self.index]
+
+    @property
+    def active_count(self) -> int:
+        return sum(not car.done for car in self.cars)
+
+    def _start_generation(self) -> None:
+        self.cars = [Car(self.track, self.settings.max_steps) for _ in self.population]
+        self.traces = [[car.snapshot()] for car in self.cars]
+        self.index = 0
+
+    def focus(self, index: int) -> None:
+        if not 0 <= index < len(self.population):
+            raise IndexError("Evolution model index is outside the population")
+        self.index = index
+
+    def tick(self) -> None:
+        for index, car in enumerate(self.cars):
+            if car.done:
+                continue
+            observation = car.observation()
+            hidden, outputs = self.population[index].forward(observation)
+            action = int(np.argmax(outputs))
+            result = car.step(action)
+            if index == self.index:
+                self.last_observation, self.last_hidden = observation, hidden
+                self.last_outputs, self.last_action = outputs, action
+                self.last_reward = result.reward
+            self.traces[index].append(car.snapshot(observation, hidden, outputs, action))
+            if result.done:
+                self._finish_candidate(index)
+        if self.active_count == 0:
+            self._next_generation()
+            self._start_generation()
+
+    def _finish_candidate(self, index: int) -> None:
+        car = self.cars[index]
+        network = self.population[index]
+        score = car.score()
+        lap_time = min(car.lap_times) if car.lap_times else None
+        self.results.append((score, network.copy(), car.laps > 0,
+                             car.crashed, lap_time,
+                             min(1.0, car.max_progress / self.track.total_length)))
         replay = {"mode": self.mode, "run": self.generation,
-                  "label": f"Generation {self.generation}, car {self.index + 1}",
-                  "score": score, "frames": self.frames}
+                  "label": f"Generation {self.generation}, car {index + 1}",
+                  "score": score, "frames": self.traces[index]}
         self.last_replay = replay
         if score > self.best_score:
             self.best_score = score
-            self.best_network = self.current_network.copy()
+            self.best_network = network.copy()
             self.best_origin = self.track.definition()
             self.best_replay = replay
-        self.index += 1
-        if self.index >= len(self.population):
-            self._next_generation()
-        self.car = Car(self.track, self.settings.max_steps)
-        self.frames = [self.car.snapshot()]
 
     def _next_generation(self) -> None:
         ranked = sorted(self.results, key=lambda row: row[0], reverse=True)
@@ -105,7 +130,6 @@ class EvolutionTrainer:
             next_population.append(parent.mutate(self.rng, self.settings.mutation))
         self.population = next_population
         self.results = []
-        self.index = 0
         self.generation += 1
 
 
