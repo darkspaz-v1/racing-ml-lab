@@ -79,6 +79,7 @@ class EvolutionTrainer:
         for index, car in enumerate(self.cars):
             if car.done:
                 continue
+            decision_pose = (car.x, car.y, car.angle)
             observation = car.observation()
             hidden, outputs = self.population[index].forward(observation)
             action = int(np.argmax(outputs))
@@ -87,7 +88,8 @@ class EvolutionTrainer:
                 self.last_observation, self.last_hidden = observation, hidden
                 self.last_outputs, self.last_action = outputs, action
                 self.last_reward = result.reward
-            self.traces[index].append(car.snapshot(observation, hidden, outputs, action))
+            self.traces[index].append(car.snapshot(observation, hidden, outputs, action,
+                                                   decision_pose))
             if result.done:
                 self._finish_candidate(index)
         if self.active_count == 0:
@@ -141,6 +143,7 @@ class DQNTrainer:
         self.rng = np.random.default_rng(settings.seed)
         self.online = Network(self.rng)
         self.target = self.online.copy()
+        self.last_decision_network = self.online.copy()
         self.memory: deque = deque(maxlen=20000)
         self.episode = 1
         self.epsilon = 1.0
@@ -168,8 +171,11 @@ class DQNTrainer:
         return self.online
 
     def tick(self) -> None:
+        decision_pose = (self.car.x, self.car.y, self.car.angle)
         observation = self.car.observation()
         hidden, q_values = self.online.forward(observation)
+        # Keep the policy that produced this displayed decision, before a gradient update.
+        self.last_decision_network = self.online.copy()
         self.explored = bool(self.rng.random() < self.epsilon)
         action = int(self.rng.integers(5)) if self.explored else int(np.argmax(q_values))
         result = self.car.step(action)
@@ -179,7 +185,8 @@ class DQNTrainer:
         self.last_observation, self.last_hidden = observation, hidden
         self.last_outputs, self.last_action = q_values, action
         self.last_reward = result.reward
-        self.frames.append(self.car.snapshot(observation, hidden, q_values, action))
+        self.frames.append(self.car.snapshot(observation, hidden, q_values, action,
+                                             decision_pose))
         self.training_steps += 1
         if len(self.memory) >= max(128, self.settings.batch_size) and self.training_steps % 4 == 0:
             self._learn()
@@ -226,11 +233,13 @@ class DQNTrainer:
         car = Car(self.track, self.settings.max_steps)
         frames = [car.snapshot()]
         while not car.done:
+            decision_pose = (car.x, car.y, car.angle)
             observation = car.observation()
             hidden, outputs = self.online.forward(observation)
             action = int(np.argmax(outputs))
             car.step(action)
-            frames.append(car.snapshot(observation, hidden, outputs, action))
+            frames.append(car.snapshot(observation, hidden, outputs, action,
+                                       decision_pose))
         score = car.score()
         self.evaluation_history.append({"run": self.episode, "score": score,
                                         "completion": int(car.laps > 0),

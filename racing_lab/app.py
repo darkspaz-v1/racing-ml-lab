@@ -11,6 +11,7 @@ from datetime import datetime
 import numpy as np
 import pygame
 
+from .decision_lab import DecisionProbe
 from .learning import DQNTrainer, EvolutionTrainer, Settings
 from .network import Network
 from .simulation import ACTION_NAMES, INPUT_NAMES, SENSOR_ANGLES, Car
@@ -78,6 +79,13 @@ class App:
         self.speed_index = 0
         self.speeds = [1, 8, 40, 120]
         self.chart_metric = "score"
+        self.pit_board = False
+        self.board_page = 0
+        self.board_ranked = False
+        self.sandbox: DecisionProbe | None = None
+        self.wiring = False
+        self.sandbox_previous_pause = False
+        self.sandbox_dragging = False
         self.buttons: list[tuple[pygame.Rect, object]] = []
         self.message = "Train a driver, inspect its decisions, then race it."
         self.message_time = pygame.time.get_ticks()
@@ -127,12 +135,16 @@ class App:
         self.chart_metric = metrics[(metrics.index(current) + direction) % len(metrics)]
 
     def reset_trainers(self):
+        self._close_sandbox()
         self.trainers = {"evolution": EvolutionTrainer(self.track, self.settings),
                          "dqn": DQNTrainer(self.track, self.settings)}
+        self.board_page = 0
         self.paused = False
         self.status("Both learners reset. Their tracks and seed are identical.")
 
     def select_algorithm(self, algorithm):
+        self._close_sandbox()
+        self.pit_board = False
         self.algorithm = algorithm
         self.view = "train"
         self.paused = False
@@ -140,6 +152,8 @@ class App:
                     else "DQN learns action values from replayed experience.")
 
     def start_compare(self):
+        self._close_sandbox()
+        self.pit_board = False
         self.view = "compare"
         self.paused = False
         self.status("Both learners now advance together. Select a model to inspect its decisions.")
@@ -153,12 +167,69 @@ class App:
 
     def focus_evolution(self, delta: int) -> None:
         population = self.trainers["evolution"]
-        population.focus((population.index + delta) % len(population.population))
+        self.focus_model((population.index + delta) % len(population.population))
+
+    def focus_model(self, index: int) -> None:
+        population = self.trainers["evolution"]
+        population.focus(index)
         if self.view == "compare":
             self.algorithm = "evolution"
         self.status(f"Inspecting evolution model E{population.index + 1}.")
 
+    def toggle_pit_board(self) -> None:
+        self._close_sandbox()
+        self.wiring = False
+        self.pit_board = not self.pit_board
+
+    def toggle_wiring(self) -> None:
+        self._close_sandbox()
+        self.pit_board = False
+        self.wiring = not self.wiring
+        if self.wiring:
+            self.status("Network wiring: every input, hidden unit, and action, drawn as nodes and weighted links.")
+
+    def open_sandbox(self) -> None:
+        frame = self._world_frame() or {}
+        observation = frame.get("observation", [])
+        if len(observation) != 12:
+            self.status("Wait for one driving decision before opening the decision sandbox.")
+            return
+        network = self._decision_network()
+        if network is None:
+            self.status("Load a model before inspecting race decisions.")
+            return
+        self.sandbox = DecisionProbe.capture(network, observation, frame.get("action"))
+        self.sandbox_previous_pause = self.paused
+        self.paused = True
+        self.pit_board = False
+        self.wiring = False
+        self.status("Decision sandbox: change a sensor to inspect the frozen network. Training is paused.")
+
+    def _close_sandbox(self) -> None:
+        if self.sandbox is not None:
+            self.paused = self.sandbox_previous_pause
+            self.sandbox = None
+            self.sandbox_dragging = False
+
+    def _sandbox_frame(self):
+        frame = self._world_frame() or {}
+        if self.sandbox is None:
+            return frame
+        hidden, outputs, action = self.sandbox.evaluate()
+        return {**frame, "observation": self.sandbox.edited,
+                "hidden": hidden, "outputs": outputs, "action": action}
+
+    def _decision_network(self):
+        if self.sandbox is not None:
+            return self.sandbox.network
+        if self.view == "race":
+            return self.opponent_network
+        if self.algorithm == "dqn" and self.view in ("train", "compare"):
+            return self.trainer.last_decision_network
+        return self.trainer.current_network
+
     def start_race(self):
+        self.pit_board = False
         self.view = "race"
         self.paused = False
         self.human = Car(self.track, self.settings.max_steps)
@@ -173,6 +244,7 @@ class App:
         self.status("Arrow keys or WASD: steer, accelerate, brake. AI is the best saved driver.")
 
     def start_editor(self):
+        self.pit_board = False
         self.view = "editor"
         self.paused = True
         self.editor_points = list(self.track.points)
@@ -300,6 +372,7 @@ class App:
             else:
                 self.trainer.online = network.copy()
                 self.trainer.target = network.copy()
+                self.trainer.last_decision_network = network.copy()
             self.view = "train"
             source_track = (origin or {}).get("name", "unknown")
             self.status(f"Loaded {path.name} from {source_track}. Race it on the current track.")
@@ -321,6 +394,7 @@ class App:
         self.status(f"Replay saved: {path.name}")
 
     def open_replay(self):
+        self.pit_board = False
         path = self._file_dialog("open", REPLAYS, "json")
         if not path:
             return
@@ -343,6 +417,7 @@ class App:
             self.status(f"Could not load replay: {exc}")
 
     def replay_best(self):
+        self.pit_board = False
         self.replay = self.trainer.best_replay or self.trainer.last_replay
         if self.replay is None:
             self.status("Finish a training run to inspect its replay.")
@@ -354,6 +429,7 @@ class App:
         self.status(self.replay["label"] + " — use Play or step frame by frame.")
 
     def replay_last(self):
+        self.pit_board = False
         self.replay = self.trainer.last_replay
         if self.replay is None:
             self.status("Finish a training run to inspect its replay.")
@@ -387,11 +463,13 @@ class App:
             else:
                 action = 3
             self.human.step(action)
+            decision_pose = (self.opponent.x, self.opponent.y, self.opponent.angle)
             observation = self.opponent.observation()
             hidden, outputs = self.opponent_network.forward(observation)
             ai_action = int(np.argmax(outputs))
             self.opponent.step(ai_action)
-            self.race_frame = self.opponent.snapshot(observation, hidden, outputs, ai_action)
+            self.race_frame = self.opponent.snapshot(observation, hidden, outputs, ai_action,
+                                                     decision_pose)
             if self.human.done and self.opponent.done:
                 self.paused = True
         elif self.view == "replay" and self.replay:
@@ -539,13 +617,19 @@ class App:
             frame = self._world_frame()
             if frame:
                 x, y, angle = frame["x"], frame["y"], frame["angle"]
+                sensor_x = frame.get("decision_x", x)
+                sensor_y = frame.get("decision_y", y)
+                sensor_angle = frame.get("decision_angle", angle)
                 obs = frame.get("observation", [])
                 for i, degrees in enumerate(SENSOR_ANGLES):
                     ray_length = (obs[i] * 190 if len(obs) > i else
-                                  self.track.ray_distance(x, y, angle + math.radians(degrees)))
-                    theta = angle + math.radians(degrees)
-                    end = (x + ray_length * math.cos(theta), y + ray_length * math.sin(theta))
-                    pygame.draw.line(world, GREEN if i == 3 else (95, 178, 206), (x, y), end, 2)
+                                  self.track.ray_distance(sensor_x, sensor_y,
+                                                          sensor_angle + math.radians(degrees)))
+                    theta = sensor_angle + math.radians(degrees)
+                    end = (sensor_x + ray_length * math.cos(theta),
+                           sensor_y + ray_length * math.sin(theta))
+                    pygame.draw.line(world, GREEN if i == 3 else (95, 178, 206),
+                                     (sensor_x, sensor_y), end, 2)
                     pygame.draw.circle(world, ORANGE, (round(end[0]), round(end[1])), 3)
                 selected_color = (ORANGE if self.algorithm == "evolution" and self.view in ("train", "compare")
                                   else GREEN)
@@ -570,6 +654,274 @@ class App:
                 text(world, self.small, label, TEXT, 26, 21)
                 self._draw_model_garage(world, frame)
         self.screen.blit(world, (OX, OY))
+
+    def _draw_pit_board(self):
+        if not self.pit_board or self.view not in ("train", "compare"):
+            return
+        population = self.trainers["evolution"]
+        dim = pygame.Surface((WORLD_W, WORLD_H), pygame.SRCALPHA)
+        dim.fill((6, 13, 20, 189))
+        self.screen.blit(dim, (OX, OY))
+        box(self.screen, pygame.Rect(90, 143, 760, 523), (18, 31, 43), (88, 119, 131))
+        text(self.screen, self.title, "PIT WALL", TEXT, 111, 164)
+        text(self.screen, self.small, "Every card is a separate neural-network driver. Click one to inspect it.",
+             MUTED, 111, 199)
+        self.button("Close  F", (744, 160, 88, 36), self.toggle_pit_board)
+        if self.view == "compare":
+            learner = self.trainers["dqn"]
+            rl_progress = min(100, learner.car.max_progress / self.track.total_length * 100)
+            text(self.screen, self.small,
+                 f"RL online model  ·  episode {learner.episode}  ·  {rl_progress:.0f}% progress",
+                 GREEN, 111, 221)
+            self.button("Inspect RL", (718, 209, 114, 32),
+                        lambda: setattr(self, "algorithm", "dqn"),
+                        active=self.algorithm == "dqn")
+        else:
+            text(self.screen, self.small,
+                 f"Generation {population.generation}  ·  {population.active_count}/{len(population.cars)} driving",
+                 GREEN, 111, 221)
+        total = len(population.cars)
+        order = list(range(total))
+        if self.board_ranked:
+            order.sort(key=lambda i: (population.cars[i].laps,
+                                      population.cars[i].max_progress), reverse=True)
+        self.button("ID view" if self.board_ranked else "Rank view",
+                    (594, 209, 116, 32),
+                    lambda: setattr(self, "board_ranked", not self.board_ranked),
+                    active=self.board_ranked)
+        pages = max(1, (total + 19) // 20)
+        self.board_page = min(self.board_page, pages - 1)
+        for slot in range(20):
+            order_index = self.board_page * 20 + slot
+            if order_index >= total:
+                break
+            index = order[order_index]
+            car = population.cars[index]
+            column, row = slot % 4, slot // 4
+            rect = pygame.Rect(111 + column * 181, 248 + row * 63, 173, 56)
+            selected = self.algorithm == "evolution" and index == population.index
+            hover = rect.collidepoint(pygame.mouse.get_pos())
+            pygame.draw.rect(self.screen, (47, 56, 59) if selected else
+                             (35, 54, 66) if hover else (26, 42, 55), rect, border_radius=7)
+            pygame.draw.rect(self.screen, ORANGE if selected else BORDER, rect, 1, border_radius=7)
+            color = ORANGE if selected else EVOLUTION_COLORS[index % len(EVOLUTION_COLORS)]
+            pygame.draw.circle(self.screen, color, (rect.x + 13, rect.y + 15), 5)
+            text(self.screen, self.bold, f"E{index + 1:02d}", TEXT, rect.x + 25, rect.y + 4)
+            progress = min(100, car.max_progress / self.track.total_length * 100)
+            text(self.screen, self.mono, f"{progress:3.0f}%", color, rect.x + 118, rect.y + 5)
+            state = "CRASH" if car.crashed else "DONE" if car.done else "DRIVING"
+            text(self.screen, self.tiny, f"Lap {car.laps} · {state}",
+                 RED if car.crashed else MUTED, rect.x + 12, rect.y + 28)
+            pygame.draw.rect(self.screen, (51, 68, 77), (rect.x + 11, rect.bottom - 8, 151, 3))
+            if progress:
+                pygame.draw.rect(self.screen, color,
+                                 (rect.x + 11, rect.bottom - 8, round(151 * progress / 100), 3))
+            self.buttons.append((rect, lambda index=index: self.focus_model(index)))
+        text(self.screen, self.small, f"Page {self.board_page + 1} / {pages}", TEXT, 390, 587)
+        self.button("‹ Previous", (112, 579, 111, 38),
+                    lambda: setattr(self, "board_page", max(0, self.board_page - 1)),
+                    disabled=self.board_page == 0)
+        self.button("Next ›", (721, 579, 111, 38),
+                    lambda: setattr(self, "board_page", min(pages - 1, self.board_page + 1)),
+                    disabled=self.board_page >= pages - 1)
+        text(self.screen, self.tiny,
+             "Progress is based on ordered gates. Crashed cars stay visible until the next generation.",
+             MUTED, 111, 631)
+
+    def _set_sandbox_slider(self, mouse_x: int) -> None:
+        if self.sandbox is None:
+            return
+        low, high = self.sandbox.bounds()
+        fraction = max(0.0, min(1.0, (mouse_x - 142) / 628))
+        self.sandbox.set_value(low + fraction * (high - low))
+
+    def _draw_sandbox(self):
+        if self.sandbox is None:
+            return
+        probe = self.sandbox
+        dim = pygame.Surface((WORLD_W, WORLD_H), pygame.SRCALPHA)
+        dim.fill((6, 13, 20, 199))
+        self.screen.blit(dim, (OX, OY))
+        footer_dim = pygame.Surface((WORLD_W, 146), pygame.SRCALPHA)
+        footer_dim.fill((6, 13, 20, 175))
+        self.screen.blit(footer_dim, (OX, 739))
+        box(self.screen, pygame.Rect(100, 151, 740, 526), (18, 31, 43), (88, 119, 131))
+        text(self.screen, self.title, "DECISION SANDBOX", TEXT, 122, 171)
+        self.button("Close  Esc", (722, 168, 101, 36), self._close_sandbox)
+        text(self.screen, self.small,
+             "Change one input. A copy of that decision's network recalculates without driving or training.",
+             MUTED, 122, 204, 690)
+        text(self.screen, self.tiny, "CHOOSE AN INPUT", BLUE, 122, 225)
+        for index, name in enumerate(INPUT_NAMES):
+            column, row = index % 3, index // 3
+            value = probe.edited[index]
+            self.button(f"{name}   {value:+.2f}",
+                        (122 + column * 232, 245 + row * 38, 216, 32),
+                        lambda index=index: probe.set_input(index),
+                        active=probe.selected_input == index)
+        low, high = probe.bounds()
+        index = probe.selected_input
+        text(self.screen, self.bold, f"Adjust {INPUT_NAMES[index]}", TEXT, 122, 405)
+        self.button("Reset inputs", (688, 405, 135, 34), probe.reset)
+        text(self.screen, self.small, f"Original {probe.original[index]:+.2f}", MUTED, 122, 436)
+        text(self.screen, self.small, f"What if {probe.edited[index]:+.2f}", ORANGE, 651, 436)
+        pygame.draw.line(self.screen, BORDER, (142, 469), (770, 469), 9)
+        fraction = (probe.edited[index] - low) / (high - low)
+        thumb_x = round(142 + fraction * 628)
+        pygame.draw.line(self.screen, ORANGE, (142, 469), (thumb_x, 469), 9)
+        pygame.draw.circle(self.screen, TEXT, (thumb_x, 469), 11)
+        text(self.screen, self.tiny, f"{low:+.0f}", MUTED, 123, 484)
+        text(self.screen, self.tiny, f"{high:+.0f}", MUTED, 772, 484)
+        _, baseline, greedy = probe.baseline()
+        _, edited, prediction = probe.evaluate()
+        actual = (ACTION_NAMES[probe.actual_action] if isinstance(probe.actual_action, int) else "waiting")
+        text(self.screen, self.tiny,
+             f"Recorded action: {actual}  ·  Baseline highest: {ACTION_NAMES[greedy]}  ·  What-if highest: {ACTION_NAMES[prediction]}",
+             TEXT, 122, 504, 690)
+        text(self.screen, self.tiny, "ACTION", BLUE, 122, 530)
+        text(self.screen, self.tiny, "BASELINE", BLUE, 525, 530)
+        text(self.screen, self.tiny, "WHAT IF", ORANGE, 686, 530)
+        for i, name in enumerate(ACTION_NAMES):
+            y = 550 + i * 19
+            if prediction == i:
+                pygame.draw.rect(self.screen, (65, 57, 43), (120, y - 1, 702, 18), border_radius=3)
+            text(self.screen, self.small, name, ORANGE if prediction == i else TEXT, 126, y - 1)
+            text(self.screen, self.mono, f"{baseline[i]:+.2f}", MUTED, 524, y - 2)
+            text(self.screen, self.mono, f"{edited[i]:+.2f}", ORANGE if prediction == i else TEXT,
+                 684, y - 2)
+        text(self.screen, self.tiny,
+             "Baseline uses the recorded decision's network. What-if values are hypothetical; no car step occurs.",
+             MUTED, 122, 650, 690)
+
+    def _wiring_layout(self):
+        """Node centres for the wiring diagram: 12 inputs, 16 hidden units, 5 actions."""
+        input_x, hidden_x, output_x = 268, 508, 664
+        in_ys = [252 + i * 30 for i in range(len(INPUT_NAMES))]
+        hidden_ys = [250 + i * 22.4 for i in range(16)]
+        out_ys = [272 + i * 72 for i in range(5)]
+        return input_x, hidden_x, output_x, in_ys, hidden_ys, out_ys
+
+    @staticmethod
+    def _wire_color(weight, scale, live):
+        """Fade each link from the panel colour toward green (+) or red (-) by |weight|."""
+        if not live:
+            return (54, 67, 76)
+        strength = min(1.0, abs(weight) / scale) if scale else 0.0
+        target = (41, 132, 108) if weight >= 0 else (138, 64, 74)
+        base = (18, 31, 43)
+        mix = 0.18 + 0.82 * strength
+        return tuple(int(b + (t - b) * mix) for b, t in zip(base, target))
+
+    def _draw_wiring(self):
+        if not self.wiring:
+            return
+        network = self._decision_network()
+        dim = pygame.Surface((WORLD_W, WORLD_H), pygame.SRCALPHA)
+        dim.fill((6, 13, 20, 199))
+        self.screen.blit(dim, (OX, OY))
+        footer_dim = pygame.Surface((WORLD_W, 146), pygame.SRCALPHA)
+        footer_dim.fill((6, 13, 20, 175))
+        self.screen.blit(footer_dim, (OX, 739))
+        box(self.screen, pygame.Rect(100, 151, 740, 526), (18, 31, 43), (88, 119, 131))
+        text(self.screen, self.title, "NETWORK WIRING", TEXT, 122, 171)
+        self.button("Close  N", (722, 168, 101, 36), self.toggle_wiring)
+        if network is None:
+            text(self.screen, self.small, "Load or train a model to see its wiring.", MUTED, 122, 210)
+            return
+        text(self.screen, self.small,
+             "Every input, hidden unit, and action, with all 272 weighted connections.",
+             MUTED, 122, 204, 580)
+
+        frame = self._world_frame() or {}
+        obs = np.asarray(frame.get("observation", []), dtype=float)
+        hidden = np.asarray(frame.get("hidden", []), dtype=float)
+        outputs = np.asarray(frame.get("outputs", []), dtype=float)
+        action = frame.get("action")
+        # Replays store node values but not the weight matrices of the moment.
+        live = self.view != "replay"
+        input_x, hidden_x, output_x, in_ys, hidden_ys, out_ys = self._wiring_layout()
+
+        mouse = pygame.mouse.get_pos()
+        hover_input = next((i for i, y in enumerate(in_ys)
+                            if math.dist(mouse, (input_x, y)) <= 9), None)
+        hover_hidden = next((i for i, y in enumerate(hidden_ys)
+                             if math.dist(mouse, (hidden_x, y)) <= 9), None)
+        hover_output = next((i for i, y in enumerate(out_ys)
+                             if math.dist(mouse, (output_x, y)) <= 11), None)
+        focused = hover_input is not None or hover_hidden is not None or hover_output is not None
+
+        w1_scale = float(np.abs(network.w1).max()) or 1.0
+        w2_scale = float(np.abs(network.w2).max()) or 1.0
+        for i, y1 in enumerate(in_ys):
+            for j, y2 in enumerate(hidden_ys):
+                lit = hover_input == i or hover_hidden == j
+                if focused and not lit:
+                    continue
+                weight = network.w1[i, j]
+                pygame.draw.line(self.screen, self._wire_color(weight, w1_scale, live),
+                                 (input_x, int(y1)), (hidden_x, int(y2)), 2 if lit else 1)
+        for i, y1 in enumerate(hidden_ys):
+            for j, y2 in enumerate(out_ys):
+                lit = hover_hidden == i or hover_output == j
+                if focused and not lit:
+                    continue
+                weight = network.w2[i, j]
+                pygame.draw.line(self.screen, self._wire_color(weight, w2_scale, live),
+                                 (hidden_x, int(y1)), (output_x, int(y2)), 2 if lit else 1)
+
+        for i, y in enumerate(in_ys):
+            value = float(obs[i]) if len(obs) == len(INPUT_NAMES) else 0.0
+            text(self.screen, self.tiny, INPUT_NAMES[i], MUTED, 124, int(y) - 7, 116)
+            text(self.screen, self.mono, f"{value:+.2f}",
+                 TEXT if hover_input == i else MUTED, 246 - 44, int(y) - 8)
+            pygame.draw.circle(self.screen, (76, int(110 + min(1, abs(value)) * 125), 148),
+                               (input_x, int(y)), 6)
+            if hover_input == i:
+                pygame.draw.circle(self.screen, TEXT, (input_x, int(y)), 9, 1)
+        for i, y in enumerate(hidden_ys):
+            value = float(hidden[i]) if len(hidden) == 16 else 0.0
+            intensity = int(75 + min(1, abs(value)) * 160)
+            pygame.draw.circle(self.screen, (intensity, 116, 78) if value < 0 else (76, intensity, 130),
+                               (hidden_x, int(y)), 5)
+            if hover_hidden == i:
+                pygame.draw.circle(self.screen, TEXT, (hidden_x, int(y)), 8, 1)
+        for i, y in enumerate(out_ys):
+            selected = action == i
+            pygame.draw.circle(self.screen, ORANGE if selected else BLUE,
+                               (output_x, int(y)), 9 if selected else 7)
+            if hover_output == i:
+                pygame.draw.circle(self.screen, TEXT, (output_x, int(y)), 12, 1)
+            value = f"  {outputs[i]:+.2f}" if len(outputs) == 5 else ""
+            text(self.screen, self.small, ACTION_NAMES[i] + value,
+                 ORANGE if selected else TEXT, output_x + 18, int(y) - 8, 152)
+
+        text(self.screen, self.tiny, "INPUTS", BLUE, 124, 228)
+        text(self.screen, self.tiny, "HIDDEN", GREEN, hidden_x - 22, 228)
+        text(self.screen, self.tiny, "ACTIONS", ORANGE, output_x - 20, 228)
+        if not live:
+            note = "Replay stores node values and the action taken; the weights of that moment are not saved."
+        elif hover_input is not None:
+            column = network.w1[hover_input]
+            note = (f"{INPUT_NAMES[hover_input]} → 16 hidden units  ·  strongest {column.max():+.2f} / "
+                    f"weakest {column.min():+.2f}")
+        elif hover_hidden is not None:
+            incoming = network.w1[:, hover_hidden]
+            outgoing = network.w2[hover_hidden]
+            strongest_in = int(np.argmax(np.abs(incoming)))
+            strongest_out = int(np.argmax(np.abs(outgoing)))
+            note = (f"H{hover_hidden + 1}  ·  strongest input {INPUT_NAMES[strongest_in]} "
+                    f"{incoming[strongest_in]:+.2f}  →  strongest action {ACTION_NAMES[strongest_out]} "
+                    f"{outgoing[strongest_out]:+.2f}")
+        elif hover_output is not None:
+            column = network.w2[:, hover_output]
+            note = (f"{ACTION_NAMES[hover_output]} ← 16 hidden units  ·  strongest {column.max():+.2f} / "
+                    f"weakest {column.min():+.2f}")
+        else:
+            note = "Green links add, red links subtract; brighter means a larger weight. Hover any node to isolate its connections."
+        text(self.screen, self.tiny, note, MUTED, 122, 614, 700)
+        text(self.screen, self.tiny,
+             "Node fill shows the current value; line colour shows the learned weight. Weights change as training continues.",
+             MUTED, 122, 638, 700)
 
     def _draw_header(self):
         text(self.screen, self.title, "RACING ML LAB", TEXT, 22, 17)
@@ -601,12 +953,14 @@ class App:
             self.button("RL driver", (RX + 407, 91, 115, 31),
                         lambda: setattr(self, "algorithm", "dqn"),
                         active=self.algorithm == "dqn")
-        subtitle = (f"Watching car E{self.trainers['evolution'].index + 1} · largest policy score acts"
+        subtitle = ("SANDBOX · hypothetical input, frozen network"
+                    if self.sandbox is not None else
+                    f"Watching car E{self.trainers['evolution'].index + 1} · largest policy score acts"
                     if self.algorithm == "evolution" and self.view in ("train", "compare") else
                     "DQN · Q values estimate future reward" if self.algorithm == "dqn" else
                     "Policy scores · largest value acts")
         text(self.screen, self.small, subtitle, MUTED, RX + 18, 119, 500)
-        frame = self._world_frame() or {}
+        frame = self._sandbox_frame()
         obs = np.asarray(frame.get("observation", []), dtype=float)
         hidden = np.asarray(frame.get("hidden", []), dtype=float)
         outputs = np.asarray(frame.get("outputs", []), dtype=float)
@@ -662,13 +1016,15 @@ class App:
         footer = pygame.Rect(RX + 14, 329, RW - 28, 20)
         pygame.draw.rect(self.screen, (27, 43, 55), footer, border_radius=4)
         if hovered is not None and self.view != "replay" and len(obs) == 12 and len(hidden) == 16:
-            network = self.opponent_network if self.view == "race" and self.opponent_network else self.trainer.current_network
+            network = self._decision_network()
             contributions = obs * network.w1[:, hovered]
             strongest_input = int(np.argmax(np.abs(contributions)))
             outgoing = hidden[hovered] * network.w2[hovered]
             strongest_output = int(np.argmax(np.abs(outgoing)))
             note = (f"H{hovered + 1}: {INPUT_NAMES[strongest_input]} {contributions[strongest_input]:+.2f}"
                     f"  →  {ACTION_NAMES[strongest_output]} {outgoing[strongest_output]:+.2f}")
+        elif self.sandbox is not None:
+            note = "Hypothetical model output only · car position and learning do not change."
         elif self.view == "replay":
             note = "Replay shows recorded activity and action. Historical weights are not saved."
         elif self.algorithm == "dqn" and self.view in ("train", "compare"):
@@ -840,13 +1196,18 @@ class App:
             self.button("Save replay", (800, 755, 104, 38), self.save_replay)
             if self.view == "compare" or self.algorithm == "evolution":
                 evolution = self.trainers["evolution"]
-                self.button("← Watch car", (36, 804, 118, 32),
+                self.button("← Watch car", (36, 802, 118, 36),
                             lambda: self.focus_evolution(-1))
-                self.button("Watch car →", (163, 804, 118, 32),
+                self.button("Watch car →", (163, 802, 118, 36),
                             lambda: self.focus_evolution(1))
+                self.button("Pit wall  F", (290, 802, 116, 36), self.toggle_pit_board,
+                            active=self.pit_board)
+                self.button("What if?  I", (415, 802, 120, 36), self.open_sandbox)
+                self.button("Wiring  N", (544, 802, 106, 36), self.toggle_wiring,
+                            active=self.wiring)
                 text(self.screen, self.small,
-                     f"Model E{evolution.index + 1} · {evolution.active_count} active · "
-                     "click a car on the track to inspect it", MUTED, 300, 810, 590)
+                     f"E{evolution.index + 1} selected · {evolution.active_count} active",
+                     MUTED, 660, 810, 242)
                 if self.view == "compare":
                     text(self.screen, self.small,
                          "Same track; each evolution tick advances every car, so sample budgets differ.",
@@ -856,12 +1217,15 @@ class App:
                          "Every colored car is a separate neural network in the same generation.",
                          MUTED, 38, 837)
             else:
+                self.button("What if?  I", (36, 802, 133, 36), self.open_sandbox)
+                self.button("Wiring  N", (178, 802, 106, 36), self.toggle_wiring,
+                            active=self.wiring)
                 text(self.screen, self.small,
-                     "This tab follows the DQN online policy; ε marks random exploratory decisions.",
-                     MUTED, 38, 807)
+                     "Probe one frozen DQN decision, or open the wiring diagram.",
+                     MUTED, 296, 810, 604)
                 text(self.screen, self.small,
                      "Use Compare models to train DQN beside the evolution population. Space pauses.",
-                     MUTED, 38, 832)
+                     MUTED, 296, 832, 604)
         elif self.view == "race":
             self.button("Restart race", (36, 755, 130, 38), self.start_race, accent=True)
             self.button("Pause" if not self.paused else "Resume", (176, 755, 110, 38),
@@ -937,7 +1301,7 @@ class App:
             ("4  FEEDBACK", "New forward progress and ordered gates earn credit; crashes and time cost points."),
             ("EVOLUTION", "A whole generation drives together. Select a car to inspect its own network."),
             ("DQN", "One network learns action values from past steps; exploration slowly decreases."),
-            ("COMPARE", "Watch both methods train on the same course at the same time."),
+            ("EXPLORE", "Compare trains both methods. F opens the pit wall; I probes a frozen decision."),
             ("EVALUATE", "Compare on a track the learner has not trained on. Training score alone can mislead."),
         ]
         for i, (heading, body) in enumerate(lines):
@@ -1053,15 +1417,25 @@ class App:
             return False
         if event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:
+                if self.sandbox is not None and pygame.Rect(130, 454, 650, 32).collidepoint(event.pos):
+                    self.sandbox_dragging = True
+                    self._set_sandbox_slider(event.pos[0])
+                    return True
+                if self.sandbox is not None and not pygame.Rect(100, 151, 740, 526).collidepoint(event.pos):
+                    return True
                 for rect, action in reversed(self.buttons):
                     if rect.collidepoint(event.pos):
                         action()
                         return True
+                if self.sandbox is not None or (self.pit_board and pygame.Rect(90, 143, 760, 523).collidepoint(event.pos)):
+                    return True
             if self.view == "editor":
                 self._editor_click(event.pos, event.button)
             elif event.button == 1 and (self.view == "compare" or
                                        self.view == "train" and self.algorithm == "evolution"):
                 self._select_car_on_track(event.pos)
+        if event.type == pygame.MOUSEMOTION and self.sandbox_dragging:
+            self._set_sandbox_slider(event.pos[0])
         if event.type == pygame.MOUSEMOTION and self.view == "editor" and self.dragging:
             x, y = event.pos[0] - OX, event.pos[1] - OY
             margin = self.editor_width / 2 + 12
@@ -1070,8 +1444,23 @@ class App:
                                                            max(margin, min(WORLD_H - margin, y)))
         if event.type == pygame.MOUSEBUTTONUP:
             self.dragging = False
+            self.sandbox_dragging = False
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE and self.view in ("train", "compare", "race", "replay"):
+            if self.sandbox is not None:
+                if event.key in (pygame.K_ESCAPE, pygame.K_i):
+                    self._close_sandbox()
+                return True
+            if self.wiring and event.key in (pygame.K_ESCAPE, pygame.K_n):
+                self.toggle_wiring()
+                return True
+            if event.key == pygame.K_n and self.view in ("train", "compare", "race", "replay"):
+                self.toggle_wiring()
+            elif event.key == pygame.K_f and (self.view == "compare" or
+                                             self.view == "train" and self.algorithm == "evolution"):
+                self.toggle_pit_board()
+            elif event.key == pygame.K_i and self.view in ("train", "compare"):
+                self.open_sandbox()
+            elif event.key == pygame.K_SPACE and self.view in ("train", "compare", "race", "replay"):
                 self.paused = not self.paused
             elif event.key == pygame.K_ESCAPE and self.view != "train":
                 self.view = "train"
@@ -1090,6 +1479,9 @@ class App:
         self._draw_chart()
         self._draw_settings()
         self._draw_bottom()
+        self._draw_pit_board()
+        self._draw_wiring()
+        self._draw_sandbox()
         pygame.display.flip()
 
     def run(self, smoke=False, screenshot=None):

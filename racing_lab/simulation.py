@@ -121,9 +121,14 @@ class Car:
         return (self.max_progress / self.track.total_length * 100
                 + 100 * self.laps - 0.015 * self.steps - (5 if self.crashed else 0))
 
-    def snapshot(self, observation=None, hidden=None, outputs=None, action=None) -> dict:
+    def snapshot(self, observation=None, hidden=None, outputs=None, action=None,
+                 decision_pose=None) -> dict:
+        decision_x, decision_y, decision_angle = (decision_pose if decision_pose is not None else
+                                                   (self.x, self.y, self.angle))
         return {"x": round(self.x, 3), "y": round(self.y, 3),
                 "angle": round(self.angle, 5), "speed": round(self.speed, 3),
+                "decision_x": round(decision_x, 3), "decision_y": round(decision_y, 3),
+                "decision_angle": round(decision_angle, 5),
                 "step": self.steps, "gate": self.next_gate, "laps": self.laps,
                 "progress": round(self.max_progress, 3), "crashed": self.crashed,
                 "observation": [] if observation is None else np.asarray(observation).round(4).tolist(),
