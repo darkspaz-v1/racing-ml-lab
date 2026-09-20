@@ -1,0 +1,48 @@
+"""A frozen, model-only what-if probe for teaching neural-network decisions."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .network import Network
+
+
+@dataclass
+class DecisionProbe:
+    network: Network
+    original: np.ndarray
+    edited: np.ndarray
+    actual_action: int | None
+    selected_input: int = 0
+
+    @classmethod
+    def capture(cls, network: Network, observation, actual_action=None) -> "DecisionProbe":
+        values = np.asarray(observation, dtype=np.float32)
+        if values.shape != (12,):
+            raise ValueError("A decision probe needs all 12 sensor inputs")
+        return cls(network.copy(), values.copy(), values.copy(), actual_action)
+
+    def bounds(self) -> tuple[float, float]:
+        return (0.0, 1.0) if self.selected_input < 8 else (-1.0, 1.0)
+
+    def set_input(self, index: int) -> None:
+        if not 0 <= index < 12:
+            raise IndexError("Input index must be between 0 and 11")
+        self.selected_input = index
+
+    def set_value(self, value: float) -> None:
+        low, high = self.bounds()
+        self.edited[self.selected_input] = np.clip(value, low, high)
+
+    def reset(self) -> None:
+        self.edited[:] = self.original
+
+    def evaluate(self) -> tuple[np.ndarray, np.ndarray, int]:
+        hidden, outputs = self.network.forward(self.edited)
+        return hidden, outputs, int(np.argmax(outputs))
+
+    def baseline(self) -> tuple[np.ndarray, np.ndarray, int]:
+        hidden, outputs = self.network.forward(self.original)
+        return hidden, outputs, int(np.argmax(outputs))

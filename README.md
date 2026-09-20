@@ -1,10 +1,10 @@
 # Racing ML Lab
 
-A local Python desktop simulation for learning **how a car learns**. Watch a 2D driver read sensor rays, choose an action, hit a wall or pass an ordered gate, and improve across runs. Train two independent learners on the same course: an evolutionary neural network and a Deep Q Network (DQN). The app runs locally and has no network connection or GitHub publishing step.
+**A hands-on machine-learning simulation by @darkspaz-v1.** Watch a 2D driver read sensor rays, choose an action, hit a wall or pass an ordered gate, and improve across runs. Train two independent learners on the same course: an evolutionary neural network and a Deep Q Network (DQN). The app runs locally and has no network connection.
 
 ![Evolution population and reinforcement learning driver together](assets/compare.png)
 
-[Evolution training view](assets/workbench.png) · [DQN learning curve](assets/dqn-learning.png)
+[Pit wall: every car's live state](assets/pit-wall.png) · [Decision sandbox: change one sensor](assets/decision-sandbox.png) · [Network wiring: all 272 connections](assets/network-wiring.png) · [DQN learning curve](assets/dqn-learning.png)
 
 ## Start here
 
@@ -21,6 +21,13 @@ On macOS or Linux, replace `.\.venv\Scripts\python.exe` with `./.venv/bin/python
 
 Start on **Evolution over generations** to see all 24 candidate cars driving at once. Click a car on the track or use **Watch car** to inspect its own sensors and network. **Reinforcement learning** trains the DQN driver; its initial random exploration is deliberate. **Compare models** advances both methods together on the same track, with an inspector switch for choosing which network to study. One evolution tick advances the whole population, so the side-by-side animation does **not** give the algorithms equal experience budgets. Return to speed ×1 to see each decision. Use **How it works** for an in-app summary.
 
+## Try the interactive tour
+
+1. Open **Evolution over generations** and click a car. Its rays, hidden units, and action values appear in the inspector. Use **Pit wall** or press **F** to see all cars and click another one. The **Rank view** button orders cards by laps and progress; **ID view** keeps car positions stable.
+2. Press **I** or choose **What if?**. Pick one of the 12 inputs and drag the slider. Watch a copy of the network that made that decision recalculate all five action values. **Baseline** shows its output for the recorded input; **What if** shows the hypothetical output. Close with **Esc**. This probe pauses training and cannot move the car or update the model.
+3. Press **N** or choose **Wiring** for the classic nodes-and-links view of the whole network: 12 inputs, 16 hidden units, 5 actions, and every weighted connection between them. Green links add, red links subtract, and brighter means a larger weight. Hover any node to hide every connection except its own. Close with **Esc**.
+4. Open **Reinforcement learning** and repeat the probe. The recorded DQN action may differ from its largest Q value because training sometimes explores randomly. Switch to **Compare models** to watch both learners on the same course.
+
 ## The system at a glance
 
 ```mermaid
@@ -36,7 +43,7 @@ flowchart LR
     D --> N
 ```
 
-The seven blue/green rays report free road ahead at −90°, −50°, −25°, 0°, +25°, +50°, and +90°. The other five inputs are speed, sine/cosine of the angle to the next gate, signed distance from the road centerline, and angle relative to the local road direction. These last inputs are *route hints* supplied by the simulation; they make the driving task learnable without hiding information from one algorithm. Both learners see the same 12 numbers.
+The seven blue/green rays report free road ahead at −90°, −50°, −25°, 0°, +25°, +50°, and +90°. Each frame records the car's pose *before* it acts, so the rays align with the inputs that actually produced that decision; the car artwork shows where it moved afterward. The other five inputs are speed, sine/cosine of the angle to the next gate, signed distance from the road centerline, and angle relative to the local road direction. These last inputs are *route hints* supplied by the simulation; they make the driving task learnable without hiding information from one algorithm. Both learners see the same 12 numbers.
 
 The five outputs correspond to **left + gas, straight + gas, right + gas, coast, and brake**. In evolution, a score simply ranks those actions; the greatest score wins. In DQN, each number estimates the discounted future reward (a **Q value**) of taking that action. During training DQN sometimes chooses a random action instead, controlled by ε (epsilon). The orange output is the *action actually taken*, including random exploration.
 
@@ -65,7 +72,10 @@ DQN stores `(state, action, reward, next state, done)` after each step. Every fo
 
 - **Track:** each colored top-down car is a separate evolution policy. The orange car is the one currently being inspected; the green car is the DQN learner in Compare models. Blue/green rays measure the inspected car's wall distance, orange dots mark where rays end, green marks the next gate, and red marks a crash. Every car has the same physics and start position.
 - **Model garage:** a magnified view of the inspected car, the current driving action, and a small live roster of other cars and their progress. This is a larger view of the actual Pygame car artwork; its body aligns with the simulation's collision box.
+- **Pit wall:** a live, clickable view of the entire evolution population, including finished and crashed cars. The board pages through larger populations and can rank cars by laps and ordered progress. The RL driver appears separately in Compare models because it is one continually updated model rather than a member of the evolution population.
 - **Live decision:** read from left to right. The input bars show the 12 numbers the car senses, the 16 numbered circles show hidden-layer activity (green positive, red negative), and the action bars show the five output values. Orange marks the action actually taken. In evolution the outputs are policy scores; in DQN they estimate future reward. DQN may take a random exploratory action even when another Q value is larger. Hover a hidden unit to see its strongest current input contribution and output link. Replay shows recorded activity and action; historical weights are not saved.
+- **Network wiring (key `N`):** the whole network as nodes and links — the compact panel above shows *values*, this shows *structure*. Node fill is the current value; line colour is the learned weight, so the diagram redraws as training changes the weights. Hovering a node isolates its connections, which is the only practical way to follow one path through 272 lines. Replays store node values and the action taken but not that moment's weight matrices, so the links are drawn grey there.
+- **Decision sandbox:** captures one observation and a *copy* of the network that made that decision, before any DQN update. Changing an input recomputes the hidden layer and output scores without taking a simulation step. The recorded action, baseline highest score, and hypothetical highest score are displayed separately. Inputs can describe situations that cannot occur on a real track, so the sandbox explains the network's arithmetic rather than predicting a realistic future trajectory.
 - **Training history:** use the arrow buttons to cycle through score, progress, lap completion, crash rate, best lap time, and DQN reward. Blue is each generation or episode; green is a trailing 10-run mean. DQN's score chart uses greedy evaluations every tenth episode, with an orange line for the best saved checkpoint; its other charts show exploratory training episodes. An empty lap-time graph means no completed lap yet. DQN can improve and later regress, which is why the best evaluated network is saved separately.
 - **Run status:** current generation/car or episode/ε/replay-memory size, a progress bar, next gate, and learning settings. Changing a setting resets both learners so subsequent comparisons use the same track and seed.
 
@@ -86,6 +96,7 @@ Two sample tracks are in `data/tracks/`: **Foundry Loop** is the default trainin
 3. **Track transfer:** train on Foundry Loop and race the saved model on Harbor Loop. Compare training score with new-track progress. Do not judge from one race alone.
 4. **Sensors:** temporarily remove route hints in `Car.observation()` while keeping input dimensions consistent. Predict which method has more difficulty and why.
 5. **Reward:** change the crash penalty or new-progress reward, retrain with the same seed, and check both lap completion and crash rate. One metric alone can give a misleading picture.
+6. **Decision sensitivity:** in the sandbox, lower a forward ray while holding the other 11 inputs fixed. Predict whether the chosen action changes. Then try the same edit on another evolution car. Different networks can react differently to the exact same hypothetical observation.
 
 For a headless CSV experiment:
 
@@ -105,8 +116,9 @@ See [the measured baseline experiment](docs/experiment-notes.md) for raw results
 | `racing_lab/track.py` | Track validation, road mask, ray casting, gates, progress |
 | `racing_lab/simulation.py` | Car physics, observations, rewards, crash and lap rules |
 | `racing_lab/network.py` | Forward pass, mutation, DQN backpropagation, model storage |
+| `racing_lab/decision_lab.py` | Frozen network probe used by the interactive what-if sandbox |
 | `racing_lab/learning.py` | Evolutionary selection, DQN replay buffer, target network |
-| `racing_lab/app.py` | Pygame UI, live graphs, editor, races, and replay controls |
+| `racing_lab/app.py` | Pygame UI, live graphs, wiring diagram, editor, races, and replay controls |
 | `racing_lab/visuals.py` | Cached top-down car artwork used for individual and population views |
 | `scripts/benchmark.py` | Reproducible training outside the graphical app |
 | `tests/test_simulation.py` | Behavioral checks for the rules that matter most |
@@ -125,3 +137,7 @@ Run tests with:
 The app is a teaching simulator, not a realistic vehicle dynamics model. Steering, acceleration, and wall collision are intentionally simple. The car has route hints; a real camera-only car would need to infer those. Tracks are single, non-crossing loops of constant width. The editor checks basic geometry, but closely parallel road segments can still overlap visually. Replays store observed values and actions, not every historical weight matrix. The two methods share an environment but use different update rules and feedback granularity, so a direct score comparison is informative but not a claim that one algorithm is universally better.
 
 No data or model files are uploaded by the app. `data/models/` and `data/replays/` are ignored by Git; share them deliberately if you choose to publish an experiment.
+
+## License
+
+MIT. See [LICENSE](LICENSE). The project was created as a personal learning lab by @darkspaz-v1.
