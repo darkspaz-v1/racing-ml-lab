@@ -10,8 +10,6 @@
 
 *Evolution training, generations 4–6, rendered headless by `scripts/capture_gif.py`.*
 
-![Evolution population and reinforcement learning driver together](assets/compare.png)
-
 [Car garage: four bodies and eight paints](assets/car-garage.png) · [Switchback Park](assets/switchback-preview.png) · [Smoothed race controls](assets/race-controls.png) · [Pit wall: every car's live state](assets/pit-wall.png) · [Decision sandbox](assets/decision-sandbox.png) · [Network wiring](assets/network-wiring.png) · [Sensor setup](assets/sensor-setup.png) · [DQN curve](assets/dqn-learning.png)
 
 ## Start here
