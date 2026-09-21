@@ -1,6 +1,14 @@
 # Racing ML Lab
 
+[![CI](https://github.com/darkspaz-v1/racing-ml-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/darkspaz-v1/racing-ml-lab/actions/workflows/ci.yml)
+
 **A hands-on machine-learning simulation by @darkspaz-v1.** Watch a 2D driver read sensor rays, choose an action, hit a wall or pass an ordered gate, and improve across runs. Train two independent learners on the same course: an evolutionary neural network and a Deep Q Network (DQN). The app runs locally and has no network connection.
+
+**For:** learners who want to see, test, and interrogate simple ML policies instead of treating a training loop as a black box. **Start:** [run it locally](#start-here), then use the [interactive tour](#try-the-interactive-tour) or reproduce the [measured experiments](docs/experiment-notes.md).
+
+![Animated capture of evolution training: 24 cars drive Apex Circuit while the fitness chart climbs over generations 4 to 6](assets/evolution.gif)
+
+*Evolution training, generations 4–6, rendered headless by `scripts/capture_gif.py`.*
 
 ![Evolution population and reinforcement learning driver together](assets/compare.png)
 
@@ -17,7 +25,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe run.py
 ```
 
-On macOS or Linux, replace `.\.venv\Scripts\python.exe` with `./.venv/bin/python`. The display is 1500 × 900 pixels. The only runtime dependencies are NumPy and pygame-ce; `pytest` is needed for the tests.
+On macOS or Linux, replace `.\.venv\Scripts\python.exe` with `./.venv/bin/python`. The display is 1500 × 900 pixels. The only runtime dependencies are NumPy and pygame-ce; `requirements-dev.txt` adds pytest, ruff and Pillow for the tests, linting and the demo GIF.
 
 Start on **Evolution over generations** to see all 24 candidate cars driving at once. Click a car on the track or use **Watch car** to inspect its own sensors and network. **Reinforcement learning** trains the DQN driver; its initial random exploration is deliberate. **Compare models** advances both methods together on the same track, with an inspector switch for choosing which network to study. One evolution tick advances the whole population, so the side-by-side animation does **not** give the algorithms equal experience budgets. Return to speed ×1 to see each decision. Use **How it works** for an in-app summary.
 
@@ -115,6 +123,25 @@ For a headless CSV experiment:
 
 See [the measured baseline experiment](docs/experiment-notes.md) for raw results, a first lap milestone, and the difference between exploratory training and greedy evaluation.
 
+### Test whether a learned policy transfers
+
+Scores from the circuit used for training are not evidence that the policy can
+drive a different one. The transfer harness trains a best policy, freezes it,
+then evaluates it greedily on a held-out bundled track without exploration or
+updates:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\evaluate_transfer.py `
+  --mode evolution --runs 30 --seeds 1 2 7 `
+  --train-track data\tracks\apex-circuit.json `
+  --evaluation-track data\tracks\harbor-loop.json `
+  --csv docs\results\apex-to-harbor-evolution.csv
+```
+
+Read [Held-out track evaluation](docs/transfer-evaluation.md) before drawing
+conclusions. A transfer failure is a useful result here: it shows track
+specialization rather than a general driving policy.
+
 ## Code tour
 
 | File | Read it for |
@@ -137,7 +164,8 @@ Start reading `Car.observation()`, then `Network.forward()`, then each trainer's
 Run tests with:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install pytest
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+$env:SDL_VIDEODRIVER = "dummy"   # run the tests without opening a window
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
@@ -148,3 +176,10 @@ No data or model files are uploaded by the app. `data/models/` and `data/replays
 ## License
 
 MIT. See [LICENSE](LICENSE). The project was created as a personal learning lab by @darkspaz-v1.
+
+## Maintenance
+
+This is a maintained learning project. If you find a reproducible defect, open
+a [bug report](.github/ISSUE_TEMPLATE/bug_report.md) with the environment and
+steps needed to reproduce it. Please remove personal paths, saved model files,
+and any other private data before posting.
