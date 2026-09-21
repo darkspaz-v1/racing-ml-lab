@@ -17,7 +17,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe run.py
 ```
 
-On macOS or Linux, replace `.\.venv\Scripts\python.exe` with `./.venv/bin/python`. The display is 1500 × 900 pixels. The only runtime dependencies are NumPy and pygame-ce; `pytest` is needed for the tests.
+On macOS or Linux, replace `.\.venv\Scripts\python.exe` with `./.venv/bin/python`. The display is 1500 × 900 pixels. The only runtime dependencies are NumPy and pygame-ce; `requirements-dev.txt` adds pytest, ruff and Pillow for the tests, linting and the demo GIF.
 
 Start on **Evolution over generations** to see all 24 candidate cars driving at once. Click a car on the track or use **Watch car** to inspect its own sensors and network. **Reinforcement learning** trains the DQN driver; its initial random exploration is deliberate. **Compare models** advances both methods together on the same track, with an inspector switch for choosing which network to study. One evolution tick advances the whole population, so the side-by-side animation does **not** give the algorithms equal experience budgets. Return to speed ×1 to see each decision. Use **How it works** for an in-app summary.
 
@@ -137,7 +137,8 @@ Start reading `Car.observation()`, then `Network.forward()`, then each trainer's
 Run tests with:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install pytest
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+$env:SDL_VIDEODRIVER = "dummy"   # run the tests without opening a window
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
