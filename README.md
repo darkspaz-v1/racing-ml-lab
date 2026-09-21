@@ -1,5 +1,7 @@
 # Racing ML Lab
 
+[![CI](https://github.com/darkspaz-v1/racing-ml-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/darkspaz-v1/racing-ml-lab/actions/workflows/ci.yml)
+
 **A hands-on machine-learning simulation by @darkspaz-v1.** Watch a 2D driver read sensor rays, choose an action, hit a wall or pass an ordered gate, and improve across runs. Train two independent learners on the same course: an evolutionary neural network and a Deep Q Network (DQN). The app runs locally and has no network connection.
 
 ![Evolution population and reinforcement learning driver together](assets/compare.png)
