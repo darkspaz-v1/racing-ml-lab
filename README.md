@@ -4,7 +4,7 @@
 
 ![Evolution population and reinforcement learning driver together](assets/compare.png)
 
-[Pit wall: every car's live state](assets/pit-wall.png) · [Decision sandbox: change one sensor](assets/decision-sandbox.png) · [Network wiring: every connection](assets/network-wiring.png) · [Sensor setup: change rays and inputs](assets/sensor-setup.png) · [DQN learning curve](assets/dqn-learning.png)
+[Car garage: four bodies and eight paints](assets/car-garage.png) · [Switchback Park](assets/switchback-preview.png) · [Smoothed race controls](assets/race-controls.png) · [Pit wall: every car's live state](assets/pit-wall.png) · [Decision sandbox](assets/decision-sandbox.png) · [Network wiring](assets/network-wiring.png) · [Sensor setup](assets/sensor-setup.png) · [DQN curve](assets/dqn-learning.png)
 
 ## Start here
 
@@ -28,6 +28,8 @@ Start on **Evolution over generations** to see all 24 candidate cars driving at 
 3. Press **N** or choose **Wiring** for the classic nodes-and-links view of the whole network: every input, 16 hidden units, 5 actions, and every weighted connection between them. Green links add, red links subtract, and brighter means a larger weight. Hover any node to hide every connection except its own. Close with **Esc**.
 4. Press **R** or choose **Sensors** to change what the car can sense: 0 to 15 rays, plus any mix of the four extra inputs. Watch the fan preview change, then **Apply & restart** to retrain both learners with a network sized to match. The results table keeps every earlier setup's numbers on the same track so you can compare them. Use the **Track** button above the course to switch circuits.
 5. Open **Reinforcement learning** and repeat the probe. The recorded DQN action may differ from its largest Q value because training sometimes explores randomly. Switch to **Compare models** to watch both learners on the same course.
+6. Choose **Cars** or press **C**. Pick one of four silhouettes and eight paint colors separately for your race car and the AI fleet. Appearance is deliberately cosmetic: it cannot change physics or learning results.
+7. Choose **Race AI**. Human steering ramps toward the key direction instead of snapping to full lock. Start with **Gentle**, then click the steering button for Balanced or Direct response if you want more speed. The live speed, steering, and gas values show exactly what your keys are commanding.
 
 ## The system at a glance
 
@@ -72,6 +74,8 @@ DQN stores `(state, action, reward, next state, done)` after each step. Every fo
 ### Reading the dashboard
 
 - **Track:** each colored top-down car is a separate evolution policy. The orange car is the one currently being inspected; the green car is the DQN learner in Compare models. Blue/green rays measure the inspected car's wall distance, orange dots mark where rays end, green marks the next gate, and red marks a crash. Every car has the same physics and start position.
+- **Circuit art:** the physics road is painted as a tabletop-style course with grass, light asphalt, red and white curbs, gravel traps, tire stacks, trees, and a chequered line. Decoration always stays outside the drivable mask, so the visual road edge and collision edge agree.
+- **Car garage (key `C`):** choose Touring, Formula, Rally, or Prototype bodies and eight paint colors. Your race car and the AI fleet have separate selections. The AI body appears on every learning car while their colors continue to identify separate models. Choices are remembered locally in ignored `data/preferences.json` and never change a model file.
 - **Model garage:** a magnified view of the inspected car, the current driving action, and a small live roster of other cars and their progress. This is a larger view of the actual Pygame car artwork; its body aligns with the simulation's collision box.
 - **Pit wall:** a live, clickable view of the entire evolution population, including finished and crashed cars. The board pages through larger populations and can rank cars by laps and ordered progress. The RL driver appears separately in Compare models because it is one continually updated model rather than a member of the evolution population.
 - **Live decision:** read from left to right. The input bars show the numbers the car senses (a bar fan for the rays once there are more than seven), the 16 numbered circles show hidden-layer activity (green positive, red negative), and the action bars show the five output values. Orange marks the action actually taken. In evolution the outputs are policy scores; in DQN they estimate future reward. DQN may take a random exploratory action even when another Q value is larger. Hover a hidden unit to see its strongest current input contribution and output link. Replay shows recorded activity and action; historical weights are not saved.
@@ -84,11 +88,11 @@ DQN stores `(state, action, reward, next state, done)` after each step. Every fo
 
 1. Choose **Track editor**. Drag existing points or choose **Clear** and click at least five points around a closed route. The first point is the start. Select another point and choose **Set start** to move it. Right-click a point to remove it.
 2. Choose **Gate tool** and click on the road to add a gate; right-click a gate to remove it. If you leave gates on automatic, they are evenly spaced. The start gate always stays at position zero. Adjust width with **Width −/+**. Choose **Apply track** to validate and train on it. **Save/Open** use JSON files.
-3. Train a driver, then choose **Race AI**. Use arrow keys or WASD. Cars are ghosts to each other: they race the track but do not collide with each other.
+3. Train a driver, then choose **Race AI**. Hold Up/W for gas, use Left/A and Right/D to steer, and Down/S to brake. Keyboard steering and throttle ease in over several frames, and **Gentle**, **Balanced**, and **Direct** modes change response without changing AI physics. Cars are ghosts to each other: they race the track but do not collide with each other.
 4. Choose **Best replay** to study the strongest recorded run or **Last replay** to inspect a recent crash. Pause, play, or move one or 60 frames at a time. **Save replay** saves whichever type you last selected. **Open replay** loads a saved JSON recording with its track and settings.
 5. **Save model** writes a compressed `.npz` with network weights, algorithm, seed, settings, training track, and best score. **Load model** keeps the *current* track so you can race a saved driver on a different course. The source track stays in the model metadata; a score from that source track is not presented as an evaluation of the new track. Its replay memory is fresh when training resumes.
 
-Three tracks are in `data/tracks/`. **Apex Circuit** is the default: a motor-racing layout with a long main straight, sweeping corners, and a tight hairpin-style U-turn through the middle, drawn with kerbs, gravel traps on the outside of corners, tyre walls, and a chequered line. It is a smoothed spline through 29 control points, and the painted road edge is exactly the physics boundary, so a car that leaves the asphalt is a car that crashes. **Foundry Loop** is the original simple oval and the track behind the measured baseline. **Harbor Loop** is a third course for evaluation. The **Track** button cycles through them; each switch restarts both learners. To test transfer, train and save on one track, switch to another, load the saved model, then race. If performance falls, the driver may have learned that particular course rather than a general driving rule. This is the simulation counterpart of evaluating your stock-ranking model on a quarantined holdout instead of its training data.
+Four tracks are in `data/tracks/`. **Apex Circuit** is the default: a long main straight, sweeping corners, and a tight hairpin-style U-turn through the middle. **Switchback Park** is closest to the tabletop-racing reference, with three long lanes, tight alternating hairpins, grass islands, trees, and continuous tire stacks. **Foundry Loop** is the original simple oval and the track behind the measured baseline. **Harbor Loop** is an alternate evaluation course. The painted road edge is exactly the physics boundary, so a car that leaves the asphalt is a car that crashes. The **Track** button cycles through every saved course; each switch restarts both learners. To test transfer, train and save on one track, switch to another, load the saved model, then race. If performance falls, the driver may have learned that particular course rather than a general driving rule. This is the simulation counterpart of evaluating your stock-ranking model on a quarantined holdout instead of its training data.
 
 ## Small experiments to try
 
@@ -122,7 +126,7 @@ See [the measured baseline experiment](docs/experiment-notes.md) for raw results
 | `racing_lab/decision_lab.py` | Frozen network probe used by the interactive what-if sandbox |
 | `racing_lab/learning.py` | Evolutionary selection, DQN replay buffer, target network |
 | `racing_lab/app.py` | Pygame UI, live graphs, wiring diagram, editor, races, and replay controls |
-| `racing_lab/visuals.py` | Cached top-down car artwork used for individual and population views |
+| `racing_lab/visuals.py` | Four cached top-down car bodies and their selectable paint colors |
 | `scripts/benchmark.py` | Reproducible training outside the graphical app |
 | `tests/test_simulation.py` | Behavioral checks for the rules that matter most |
 
@@ -137,7 +141,7 @@ Run tests with:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The app is a teaching simulator, not a realistic vehicle dynamics model. Steering, acceleration, and wall collision are intentionally simple. The car has route hints; a real camera-only car would need to infer those. Tracks are single, non-crossing loops of constant width. The editor checks basic geometry, but closely parallel road segments can still overlap visually. Replays store observed values and actions, not every historical weight matrix. The two methods share an environment but use different update rules and feedback granularity, so a direct score comparison is informative but not a claim that one algorithm is universally better.
+The app is a teaching simulator, not a realistic vehicle dynamics model. Steering, acceleration, and wall collision are intentionally simple. The human-only keyboard easing makes races easier to control; training still uses the five discrete actions shown in the inspector. The car has route hints; a real camera-only car would need to infer those. Tracks are single, non-crossing loops of constant width. The editor checks basic geometry, but closely parallel road segments can still overlap visually. Replays store observed values and actions, not every historical weight matrix. The two methods share an environment but use different update rules and feedback granularity, so a direct score comparison is informative but not a claim that one algorithm is universally better.
 
 No data or model files are uploaded by the app. `data/models/` and `data/replays/` are ignored by Git; share them deliberately if you choose to publish an experiment.
 

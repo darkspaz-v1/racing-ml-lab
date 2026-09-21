@@ -17,13 +17,14 @@ from .network import Network
 from .simulation import ACTION_NAMES, EXTRA_INPUTS, EXTRA_LABELS, MAX_RAYS, Car, Sensors
 from .scenery import render_track
 from .track import Track, WORLD_H, WORLD_W, apex_circuit
-from .visuals import CarPainter
+from .visuals import CAR_COLORS, CAR_STYLES, CarPainter
 
 
 ROOT = Path(__file__).resolve().parent.parent
 TRACKS = ROOT / "data" / "tracks"
 MODELS = ROOT / "data" / "models"
 REPLAYS = ROOT / "data" / "replays"
+PREFERENCES = ROOT / "data" / "preferences.json"
 for directory in (TRACKS, MODELS, REPLAYS):
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -70,6 +71,18 @@ class App:
         self.bold = pygame.font.SysFont("segoeui", 16, bold=True)
         self.mono = pygame.font.SysFont("consolas", 14)
         self.car_painter = CarPainter()
+        self.player_style = "rally"
+        self.player_color = CAR_COLORS[0]
+        self.ai_style = "prototype"
+        self.ai_color = CAR_COLORS[1]
+        self.car_panel = False
+        self.car_target = "player"
+        self.race_steer = 0.0
+        self.race_throttle = 0.0
+        self.race_control_index = 0
+        self.race_controls = (("Gentle", 0.56, 0.10), ("Balanced", 0.76, 0.15),
+                              ("Direct", 1.0, 0.24))
+        self._load_preferences()
         self.track = apex_circuit()
         self._track_art = None
         self._garage_slot = None
@@ -115,6 +128,32 @@ class App:
     @property
     def trainer(self):
         return self.trainers[self.algorithm]
+
+    def _load_preferences(self) -> None:
+        try:
+            saved = json.loads(PREFERENCES.read_text(encoding="utf-8"))
+            for target in ("player", "ai"):
+                style = saved.get(f"{target}_style")
+                color = saved.get(f"{target}_color")
+                if style in CAR_STYLES:
+                    setattr(self, f"{target}_style", style)
+                if (isinstance(color, list) and len(color) == 3 and
+                        all(isinstance(channel, int) and 0 <= channel <= 255 for channel in color)):
+                    setattr(self, f"{target}_color", tuple(color))
+            index = saved.get("race_control_index", 0)
+            if isinstance(index, int) and 0 <= index < len(self.race_controls):
+                self.race_control_index = index
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+
+    def _save_preferences(self) -> None:
+        data = {"player_style": self.player_style, "player_color": self.player_color,
+                "ai_style": self.ai_style, "ai_color": self.ai_color,
+                "race_control_index": self.race_control_index}
+        try:
+            PREFERENCES.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     @property
     def sensors(self) -> Sensors:
@@ -192,6 +231,28 @@ class App:
         self.wiring = False
         self.sensor_panel = False
         self.pit_board = not self.pit_board
+
+    def toggle_car_panel(self) -> None:
+        was_open = self.car_panel
+        self.car_panel = not self.car_panel
+        if was_open:
+            self._save_preferences()
+        if self.car_panel:
+            self._close_sandbox()
+            self.pit_board = self.wiring = self.sensor_panel = False
+            self.status("Car garage: choose a body and color for your car or the AI fleet.")
+
+    def set_car_style(self, style: str) -> None:
+        if style not in CAR_STYLES:
+            return
+        setattr(self, f"{self.car_target}_style", style)
+
+    def set_car_color(self, color: tuple[int, int, int]) -> None:
+        setattr(self, f"{self.car_target}_color", color)
+
+    def cycle_race_controls(self) -> None:
+        self.race_control_index = (self.race_control_index + 1) % len(self.race_controls)
+        self.status(f"Race steering set to {self.race_controls[self.race_control_index][0].lower()}.")
 
     def toggle_wiring(self) -> None:
         self._close_sandbox()
@@ -358,6 +419,7 @@ class App:
 
     def start_race(self):
         self.pit_board = False
+        self.car_panel = False
         self.view = "race"
         self.paused = False
         self.human = Car(self.track, self.settings.max_steps, self.sensors)
@@ -369,10 +431,13 @@ class App:
         self.opponent.y -= side_y
         self.opponent_network = self.trainer.best_network or self.trainer.current_network.copy()
         self.race_frame = None
-        self.status("Arrow keys or WASD: steer, accelerate, brake. AI is the best saved driver.")
+        self.race_steer = 0.0
+        self.race_throttle = 0.0
+        self.status("Hold gas, then steer smoothly. Gentle steering is selected by default.")
 
     def start_editor(self):
         self.pit_board = False
+        self.car_panel = False
         self.view = "editor"
         self.paused = True
         self.editor_points = list(self.track.points)
@@ -589,17 +654,30 @@ class App:
                     self.trainer.tick()
         elif self.view == "race" and self.human and self.opponent:
             keys = pygame.key.get_pressed()
-            if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+            left = bool(keys[pygame.K_LEFT] or keys[pygame.K_a])
+            right = bool(keys[pygame.K_RIGHT] or keys[pygame.K_d])
+            gas = bool(keys[pygame.K_UP] or keys[pygame.K_w])
+            brake = bool(keys[pygame.K_DOWN] or keys[pygame.K_s])
+            _, maximum, response = self.race_controls[self.race_control_index]
+            target_steer = (-1.0 if left and not right else 1.0 if right and not left else 0.0)
+            steer_rate = response if target_steer else response * 1.5
+            self.race_steer += max(-steer_rate, min(steer_rate, target_steer - self.race_steer))
+            throttle_target = 1.0 if gas and not brake else 0.0
+            throttle_rate = 0.075 if throttle_target else 0.14
+            self.race_throttle += max(-throttle_rate,
+                                      min(throttle_rate, throttle_target - self.race_throttle))
+            if brake:
                 action = 4
-            elif keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            elif self.race_steer < -0.02:
                 action = 0
-            elif keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            elif self.race_steer > 0.02:
                 action = 2
-            elif keys[pygame.K_UP] or keys[pygame.K_w]:
+            elif self.race_throttle > 0.02:
                 action = 1
             else:
                 action = 3
-            self.human.step(action)
+            self.human.step(action, steering_scale=abs(self.race_steer) * maximum,
+                            throttle_scale=self.race_throttle)
             decision_pose = (self.opponent.x, self.opponent.y, self.opponent.angle)
             observation = self.opponent.observation()
             hidden, outputs = self.opponent_network.forward(observation)
@@ -624,8 +702,10 @@ class App:
             return self.trainer.frames[-1]
         return None
 
-    def _draw_car(self, surface, x, y, angle, color, label=None, crashed=False, alpha=255):
-        self.car_painter.draw(surface, x, y, angle, color, alpha, crashed)
+    def _draw_car(self, surface, x, y, angle, color, label=None, crashed=False, alpha=255,
+                  style=None):
+        self.car_painter.draw(surface, x, y, angle, color, alpha, crashed,
+                              style or self.ai_style)
         if label:
             text(surface, self.small, label, color, x - 12, y - 35)
 
@@ -652,7 +732,7 @@ class App:
         text(world, self.bold, "MODEL GARAGE", TEXT, 272, 306)
         text(world, self.tiny, selected, color, 272, 329)
         self.car_painter.draw_preview(world, (324, 390), color,
-                                      bool(frame and frame.get("crashed")))
+                                      bool(frame and frame.get("crashed")), self.ai_style)
         text(world, self.tiny, "REAR", MUTED, 271, 432)
         text(world, self.tiny, "FRONT →", MUTED, 326, 432)
         pygame.draw.line(world, BORDER, (386, 329), (386, 444))
@@ -788,7 +868,8 @@ class App:
                     pygame.draw.line(world, GREEN if degrees == 0 else (95, 178, 206),
                                      (sensor_x, sensor_y), end, 2)
                     pygame.draw.circle(world, ORANGE, (round(end[0]), round(end[1])), 3)
-                selected_color = (ORANGE if self.algorithm == "evolution" and self.view in ("train", "compare")
+                selected_color = (self.ai_color if self.view == "race" else
+                                  ORANGE if self.algorithm == "evolution" and self.view in ("train", "compare")
                                   else GREEN)
                 selected_label = ("AI" if self.view == "race" else
                                   f"E{self.trainers['evolution'].index + 1}" if self.algorithm == "evolution"
@@ -799,7 +880,8 @@ class App:
                     text(world, self.bold, "CRASH", RED, x + 18, y - 24)
             if self.view == "race" and self.human:
                 self._draw_car(world, self.human.x, self.human.y, self.human.angle,
-                               ORANGE, "YOU", self.human.crashed)
+                               self.player_color, "YOU", self.human.crashed,
+                               style=self.player_style)
             if self.view in ("train", "compare"):
                 evolution = self.trainers["evolution"]
                 label = (f"EVOLUTION: {evolution.active_count}/{len(evolution.cars)} cars driving together"
@@ -1204,21 +1286,83 @@ class App:
     def _draw_header(self):
         text(self.screen, self.title, "RACING ML LAB", TEXT, 22, 17)
         text(self.screen, self.small, "LEARN THE DRIVER, INSPECT THE DECISION", MUTED, 23, 47)
-        self.button("Reinforcement learning", (329, 18, 208, 42),
+        self.button("Reinforcement learning", (329, 18, 188, 42),
                     lambda: self.select_algorithm("dqn"), active=self.view == "train" and self.algorithm == "dqn")
-        self.button("Evolution over generations", (545, 18, 236, 42),
+        self.button("Evolution over generations", (525, 18, 218, 42),
                     lambda: self.select_algorithm("evolution"), active=self.view == "train" and self.algorithm == "evolution")
-        self.button("Compare models", (789, 18, 134, 42), self.start_compare,
+        self.button("Compare models", (751, 18, 124, 42), self.start_compare,
                     active=self.view == "compare")
-        self.button("Race AI", (931, 18, 91, 42), self.start_race,
+        self.button("Race AI", (883, 18, 82, 42), self.start_race,
                     active=self.view == "race")
-        self.button("Track editor", (1030, 18, 110, 42), self.start_editor,
+        self.button("Cars", (973, 18, 76, 42), self.toggle_car_panel,
+                    active=self.car_panel)
+        self.button("Track editor", (1057, 18, 102, 42), self.start_editor,
                     active=self.view == "editor")
-        self.button("Replay", (1148, 18, 80, 42), self.replay_best,
+        self.button("Replay", (1167, 18, 74, 42), self.replay_best,
                     active=self.view == "replay")
-        self.button("How it works", (1236, 18, 115, 42),
+        self.button("How it works", (1249, 18, 102, 42),
                     lambda: setattr(self, "view", "guide"), active=self.view == "guide")
         text(self.screen, self.tiny, "LOCAL ONLY", GREEN, 1381, 30)
+
+    def _draw_car_panel(self):
+        if not self.car_panel:
+            return
+        dim = pygame.Surface((WORLD_W, WORLD_H + 146), pygame.SRCALPHA)
+        dim.fill((6, 13, 20, 202))
+        self.screen.blit(dim, (OX, OY))
+        box(self.screen, pygame.Rect(86, 132, 768, 551), (18, 31, 43), (88, 119, 131))
+        text(self.screen, self.title, "CAR GARAGE", TEXT, 110, 153)
+        text(self.screen, self.small,
+             "Pick the silhouette and paint. AI body choices also style every learning car.",
+             MUTED, 110, 187, 610)
+        self.button("Close  C", (742, 151, 91, 36), self.toggle_car_panel)
+        self.button("My race car", (110, 218, 157, 39),
+                    lambda: setattr(self, "car_target", "player"),
+                    active=self.car_target == "player")
+        self.button("AI + learning fleet", (277, 218, 182, 39),
+                    lambda: setattr(self, "car_target", "ai"),
+                    active=self.car_target == "ai")
+        target_color = self.player_color if self.car_target == "player" else self.ai_color
+        target_style = self.player_style if self.car_target == "player" else self.ai_style
+        target_label = "YOU" if self.car_target == "player" else "AI"
+        text(self.screen, self.small,
+             f"Editing {target_label}  ·  {CAR_STYLES[target_style][0]}  ·  changes apply immediately",
+             GREEN, 481, 228, 340)
+        text(self.screen, self.tiny, "BODY STYLE", BLUE, 110, 276)
+        for i, (style, (name, description)) in enumerate(CAR_STYLES.items()):
+            x = 110 + i * 181
+            rect = pygame.Rect(x, 298, 169, 145)
+            active = style == target_style
+            pygame.draw.rect(self.screen, (40, 58, 69) if active else PANEL2,
+                             rect, border_radius=9)
+            pygame.draw.rect(self.screen, GREEN if active else BORDER, rect, 2 if active else 1,
+                             border_radius=9)
+            self.car_painter.draw_preview(self.screen, (x + 84, 347), target_color,
+                                          style=style)
+            text(self.screen, self.bold, name, TEXT, x + 13, 393)
+            text(self.screen, self.tiny, description, MUTED, x + 13, 416, 145)
+            self.buttons.append((rect, lambda style=style: self.set_car_style(style)))
+        text(self.screen, self.tiny, "PAINT COLOR", BLUE, 110, 468)
+        for i, color in enumerate(CAR_COLORS):
+            x = 119 + i * 76
+            rect = pygame.Rect(x, 493, 52, 45)
+            pygame.draw.rect(self.screen, (31, 46, 58), rect, border_radius=8)
+            pygame.draw.circle(self.screen, color, rect.center, 14)
+            if color == target_color:
+                pygame.draw.rect(self.screen, TEXT, rect, 2, border_radius=8)
+                pygame.draw.circle(self.screen, BG, rect.center, 4)
+            self.buttons.append((rect, lambda color=color: self.set_car_color(color)))
+        pygame.draw.line(self.screen, BORDER, (110, 558), (830, 558))
+        self.car_painter.draw_preview(self.screen, (215, 612), self.player_color,
+                                      style=self.player_style)
+        self.car_painter.draw_preview(self.screen, (510, 612), self.ai_color,
+                                      style=self.ai_style)
+        text(self.screen, self.bold, "YOUR CAR", self.player_color, 282, 584)
+        text(self.screen, self.small, CAR_STYLES[self.player_style][0], MUTED, 282, 610)
+        text(self.screen, self.bold, "AI FLEET", self.ai_color, 575, 584)
+        text(self.screen, self.small, CAR_STYLES[self.ai_style][0], MUTED, 575, 610)
+        text(self.screen, self.tiny,
+             "Appearance does not affect physics, sensors, scores, or learning.", MUTED, 110, 657)
 
     def _draw_inspector(self):
         rect = pygame.Rect(RX, 83, RW, 273)
@@ -1538,8 +1682,16 @@ class App:
                         lambda: setattr(self, "paused", not self.paused))
             self.button("Back to training", (296, 755, 155, 38),
                         lambda: setattr(self, "view", "train"))
-            text(self.screen, self.small, "Drive: ↑/W gas · ←/A and →/D steer with gas · ↓/S brake",
-                 MUTED, 38, 808)
+            control_name = self.race_controls[self.race_control_index][0]
+            self.button(f"Steering: {control_name}", (461, 755, 157, 38),
+                        self.cycle_race_controls)
+            self.button("Car garage  C", (628, 755, 139, 38), self.toggle_car_panel)
+            text(self.screen, self.small,
+                 "Hold ↑/W for gas · tap or hold ←/A and →/D to steer · ↓/S brakes",
+                 MUTED, 38, 808, 620)
+            text(self.screen, self.mono,
+                 f"V {self.human.speed:3.1f}   STEER {self.race_steer:+.2f}   GAS {self.race_throttle:.2f}",
+                 BLUE, 655, 806, 245)
             if self.human and self.opponent:
                 text(self.screen, self.small,
                      f"You: {self.human.max_progress / self.track.total_length * 100:.0f}% / {self.human.laps} laps"
@@ -1735,6 +1887,8 @@ class App:
                         return True
                 if self.sandbox is not None or (self.pit_board and pygame.Rect(90, 143, 760, 523).collidepoint(event.pos)):
                     return True
+                if self.car_panel:
+                    return True
                 # Clicks inside the wiring or sensor overlays must not select a car underneath.
                 if ((self.wiring or self.sensor_panel and self.view in ("train", "compare"))
                         and pygame.Rect(100, 151, 740, 526).collidepoint(event.pos)):
@@ -1756,6 +1910,10 @@ class App:
             self.dragging = False
             self.sandbox_dragging = False
         if event.type == pygame.KEYDOWN:
+            if self.car_panel:
+                if event.key in (pygame.K_ESCAPE, pygame.K_c):
+                    self.toggle_car_panel()
+                return True
             if self.sandbox is not None:
                 if event.key in (pygame.K_ESCAPE, pygame.K_i):
                     self._close_sandbox()
@@ -1768,6 +1926,9 @@ class App:
                 return True
             if event.key == pygame.K_r and self.view in ("train", "compare"):
                 self.toggle_sensor_panel()
+                return True
+            if event.key == pygame.K_c:
+                self.toggle_car_panel()
                 return True
             if event.key == pygame.K_n and self.view in ("train", "compare", "race", "replay"):
                 self.toggle_wiring()
@@ -1798,6 +1959,7 @@ class App:
         self._draw_pit_board()
         self._draw_wiring()
         self._draw_sensor_panel()
+        self._draw_car_panel()
         self._draw_sandbox()
         pygame.display.flip()
 
@@ -1818,6 +1980,7 @@ class App:
                     pygame.image.save(self.screen, screenshot)
                 break
             self.clock.tick(60)
+        self._save_preferences()
         pygame.quit()
 
 
