@@ -16,6 +16,91 @@ INPUT_NAMES = ("Ray -90", "Ray -50", "Ray -25", "Ray 0", "Ray +25",
                "Ray +50", "Ray +90", "Speed", "Goal sin", "Goal cos",
                "Lane offset", "Route angle")
 MAX_SPEED = 5.2
+MAX_RAYS = 15
+# Optional non-ray inputs, in observation order: key -> (input names, value range).
+EXTRA_INPUTS = {
+    "speed": (("Speed",), (0.0, 1.0)),
+    "goal": (("Goal sin", "Goal cos"), (-1.0, 1.0)),
+    "lane": (("Lane offset",), (-1.0, 1.0)),
+    "route": (("Route angle",), (-1.0, 1.0)),
+}
+EXTRA_LABELS = {"speed": "Speed", "goal": "Goal direction",
+                "lane": "Lane offset", "route": "Route angle"}
+
+
+def sensor_angles(rays: int) -> tuple[float, ...]:
+    """Ray directions in degrees, spread evenly across the forward half-circle.
+
+    Seven rays keep the original hand-tuned fan so the documented baseline
+    experiment still reproduces exactly.
+    """
+    if rays == len(SENSOR_ANGLES):
+        return SENSOR_ANGLES
+    if rays == 1:
+        return (0,)
+    return tuple(round(-90 + 180 * i / (rays - 1), 1) for i in range(rays))
+
+
+@dataclass(frozen=True)
+class Sensors:
+    """What the car can perceive: how many rays, and which extra inputs."""
+
+    rays: int = len(SENSOR_ANGLES)
+    extras: tuple[str, ...] = tuple(EXTRA_INPUTS)
+
+    def __post_init__(self):
+        if not 0 <= self.rays <= MAX_RAYS:
+            raise ValueError(f"Use between 0 and {MAX_RAYS} rays")
+        unknown = set(self.extras) - set(EXTRA_INPUTS)
+        if unknown:
+            raise ValueError(f"Unknown sensor input: {sorted(unknown)[0]}")
+        # One canonical order, so equal setups compare and serialise equally.
+        object.__setattr__(self, "extras", tuple(key for key in EXTRA_INPUTS if key in self.extras))
+        if self.size == 0:
+            raise ValueError("The car needs at least one input")
+
+    @property
+    def angles(self) -> tuple[float, ...]:
+        return sensor_angles(self.rays) if self.rays else ()
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        rays = tuple("Ray 0" if a == 0 else f"Ray {a:+g}" for a in self.angles)
+        return rays + tuple(name for key in self.extras for name in EXTRA_INPUTS[key][0])
+
+    @property
+    def size(self) -> int:
+        return self.rays + sum(len(EXTRA_INPUTS[key][0]) for key in self.extras)
+
+    def bounds(self, index: int) -> tuple[float, float]:
+        if index < self.rays:
+            return (0.0, 1.0)
+        index -= self.rays
+        for key in self.extras:
+            names, value_range = EXTRA_INPUTS[key]
+            if index < len(names):
+                return value_range
+            index -= len(names)
+        raise IndexError("Input index is outside this sensor setup")
+
+    def short_label(self) -> str:
+        """Compact name for tables, e.g. "7 rays + all 4 inputs (12)"."""
+        rays = f"{self.rays} ray{'' if self.rays == 1 else 's'}"
+        if len(self.extras) == len(EXTRA_INPUTS):
+            extras = " + all 4 inputs"
+        elif self.extras:
+            extras = " + " + ", ".join(EXTRA_LABELS[key].split()[0].lower() for key in self.extras)
+        else:
+            extras = " only"
+        return f"{rays}{extras} ({self.size})"
+
+    def label(self) -> str:
+        extras = ", ".join(EXTRA_LABELS[key] for key in self.extras) or "no extra inputs"
+        rays = f"{self.rays} ray{'' if self.rays == 1 else 's'}"
+        return f"{rays} + {extras} ({self.size} input{'' if self.size == 1 else 's'})"
+
+
+DEFAULT_SENSORS = Sensors()
 
 
 @dataclass
@@ -31,6 +116,7 @@ class StepResult:
 class Car:
     track: Track
     max_steps: int = 750
+    sensors: Sensors = DEFAULT_SENSORS
     x: float = field(init=False)
     y: float = field(init=False)
     angle: float = field(init=False)
@@ -56,17 +142,22 @@ class Car:
                 for forward, side in ((13, 8), (13, -8), (-13, 8), (-13, -8))]
 
     def observation(self) -> np.ndarray:
-        rays = [self.track.ray_distance(self.x, self.y,
-                                       self.angle + math.radians(degrees)) / 190
-                for degrees in SENSOR_ANGLES]
-        gx, gy, _, _, _ = self.track.checkpoints[self.next_gate]
-        bearing = math.atan2(gy - self.y, gx - self.x) - self.angle
-        _, tx, ty, lateral = self.track.nearest_state(self.x, self.y)
-        route_angle = math.atan2(ty, tx) - self.angle
-        return np.asarray(rays + [self.speed / MAX_SPEED,
-                                  math.sin(bearing), math.cos(bearing),
-                                  max(-1, min(1, lateral / (self.track.width / 2))),
-                                  math.sin(route_angle)], dtype=np.float32)
+        values = [distance / 190 for distance in self.track.ray_distances(
+            self.x, self.y, [self.angle + math.radians(degrees) for degrees in self.sensors.angles])]
+        extras = self.sensors.extras
+        if "speed" in extras:
+            values.append(self.speed / MAX_SPEED)
+        if "goal" in extras:
+            gx, gy, _, _, _ = self.track.checkpoints[self.next_gate]
+            bearing = math.atan2(gy - self.y, gx - self.x) - self.angle
+            values += [math.sin(bearing), math.cos(bearing)]
+        if "lane" in extras or "route" in extras:
+            _, tx, ty, lateral = self.track.nearest_state(self.x, self.y)
+            if "lane" in extras:
+                values.append(max(-1, min(1, lateral / (self.track.width / 2))))
+            if "route" in extras:
+                values.append(math.sin(math.atan2(ty, tx) - self.angle))
+        return np.asarray(values, dtype=np.float32)
 
     def step(self, action: int) -> StepResult:
         if self.done:

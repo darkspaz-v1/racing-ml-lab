@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 
 from .network import Network
-from .simulation import Car
+from .simulation import EXTRA_INPUTS, Car, Sensors
 from .track import Track
 
 
@@ -21,9 +21,20 @@ class Settings:
     learning_rate: float = 0.001
     epsilon_decay: float = 0.997
     batch_size: int = 32
+    rays: int = 7
+    inputs: tuple[str, ...] = tuple(EXTRA_INPUTS)
+
+    def __post_init__(self):
+        # JSON round-trips turn the tuple into a list; validate and normalise it.
+        self.inputs = self.sensors().extras
+
+    def sensors(self) -> Sensors:
+        return Sensors(self.rays, tuple(self.inputs))
 
     def as_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data["inputs"] = list(self.inputs)
+        return data
 
 
 class EvolutionTrainer:
@@ -32,7 +43,8 @@ class EvolutionTrainer:
     def __init__(self, track: Track, settings: Settings):
         self.track, self.settings = track, settings
         self.rng = np.random.default_rng(settings.seed)
-        self.population = [Network(self.rng) for _ in range(settings.population)]
+        self.sensors = settings.sensors()
+        self.population = [Network(self.rng, self.sensors.size) for _ in range(settings.population)]
         self.generation = 1
         self.index = 0
         self.results: list[tuple[float, Network, bool, bool, float | None, float]] = []
@@ -66,7 +78,7 @@ class EvolutionTrainer:
         return sum(not car.done for car in self.cars)
 
     def _start_generation(self) -> None:
-        self.cars = [Car(self.track, self.settings.max_steps) for _ in self.population]
+        self.cars = [Car(self.track, self.settings.max_steps, self.sensors) for _ in self.population]
         self.traces = [[car.snapshot()] for car in self.cars]
         self.index = 0
 
@@ -141,7 +153,8 @@ class DQNTrainer:
     def __init__(self, track: Track, settings: Settings):
         self.track, self.settings = track, settings
         self.rng = np.random.default_rng(settings.seed)
-        self.online = Network(self.rng)
+        self.sensors = settings.sensors()
+        self.online = Network(self.rng, self.sensors.size)
         self.target = self.online.copy()
         self.last_decision_network = self.online.copy()
         self.memory: deque = deque(maxlen=20000)
@@ -150,7 +163,7 @@ class DQNTrainer:
         self.training_steps = 0
         self.history: list[dict] = []
         self.evaluation_history: list[dict] = []
-        self.car = Car(track, settings.max_steps)
+        self.car = Car(track, settings.max_steps, self.sensors)
         self.frames = [self.car.snapshot()]
         self.episode_reward = 0.0
         self.last_replay: dict | None = None
@@ -224,13 +237,13 @@ class DQNTrainer:
             self._evaluate_greedy()
         self.epsilon = max(0.05, self.epsilon * self.settings.epsilon_decay)
         self.episode += 1
-        self.car = Car(self.track, self.settings.max_steps)
+        self.car = Car(self.track, self.settings.max_steps, self.sensors)
         self.frames = [self.car.snapshot()]
         self.episode_reward = 0.0
 
     def _evaluate_greedy(self) -> None:
         """Measure the learned policy without ε exploration or weight updates."""
-        car = Car(self.track, self.settings.max_steps)
+        car = Car(self.track, self.settings.max_steps, self.sensors)
         frames = [car.snapshot()]
         while not car.done:
             decision_pose = (car.x, car.y, car.angle)

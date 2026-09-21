@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .network import Network
+from .simulation import DEFAULT_SENSORS, Sensors
 
 
 @dataclass
@@ -15,21 +16,23 @@ class DecisionProbe:
     original: np.ndarray
     edited: np.ndarray
     actual_action: int | None
+    sensors: Sensors = DEFAULT_SENSORS
     selected_input: int = 0
 
     @classmethod
-    def capture(cls, network: Network, observation, actual_action=None) -> "DecisionProbe":
+    def capture(cls, network: Network, observation, actual_action=None,
+                sensors: Sensors = DEFAULT_SENSORS) -> "DecisionProbe":
         values = np.asarray(observation, dtype=np.float32)
-        if values.shape != (12,):
-            raise ValueError("A decision probe needs all 12 sensor inputs")
-        return cls(network.copy(), values.copy(), values.copy(), actual_action)
+        if values.shape != (sensors.size,) or network.w1.shape[0] != sensors.size:
+            raise ValueError(f"A decision probe needs all {sensors.size} sensor inputs")
+        return cls(network.copy(), values.copy(), values.copy(), actual_action, sensors)
 
     def bounds(self) -> tuple[float, float]:
-        return (0.0, 1.0) if self.selected_input < 8 else (-1.0, 1.0)
+        return self.sensors.bounds(self.selected_input)
 
     def set_input(self, index: int) -> None:
-        if not 0 <= index < 12:
-            raise IndexError("Input index must be between 0 and 11")
+        if not 0 <= index < self.sensors.size:
+            raise IndexError(f"Input index must be between 0 and {self.sensors.size - 1}")
         self.selected_input = index
 
     def set_value(self, value: float) -> None:
