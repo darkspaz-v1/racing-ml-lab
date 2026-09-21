@@ -14,8 +14,9 @@ import pygame
 from .decision_lab import DecisionProbe
 from .learning import DQNTrainer, EvolutionTrainer, Settings
 from .network import Network
-from .simulation import ACTION_NAMES, INPUT_NAMES, SENSOR_ANGLES, Car
-from .track import Track, WORLD_H, WORLD_W, default_track
+from .simulation import ACTION_NAMES, EXTRA_INPUTS, EXTRA_LABELS, MAX_RAYS, Car, Sensors
+from .scenery import render_track
+from .track import Track, WORLD_H, WORLD_W, apex_circuit
 from .visuals import CarPainter
 
 
@@ -69,7 +70,9 @@ class App:
         self.bold = pygame.font.SysFont("segoeui", 16, bold=True)
         self.mono = pygame.font.SysFont("consolas", 14)
         self.car_painter = CarPainter()
-        self.track = default_track()
+        self.track = apex_circuit()
+        self._track_art = None
+        self._garage_slot = None
         self.settings = Settings()
         self.trainers = {"evolution": EvolutionTrainer(self.track, self.settings),
                          "dqn": DQNTrainer(self.track, self.settings)}
@@ -84,6 +87,9 @@ class App:
         self.board_ranked = False
         self.sandbox: DecisionProbe | None = None
         self.wiring = False
+        self.sensor_panel = False
+        self.sensor_draft: Sensors | None = None
+        self.sensor_results: list[dict] = []
         self.sandbox_previous_pause = False
         self.sandbox_dragging = False
         self.buttons: list[tuple[pygame.Rect, object]] = []
@@ -109,6 +115,11 @@ class App:
     @property
     def trainer(self):
         return self.trainers[self.algorithm]
+
+    @property
+    def sensors(self) -> Sensors:
+        """The sensor setup both learners are currently training with."""
+        return self.trainers["evolution"].sensors
 
     def status(self, message: str) -> None:
         self.message = message
@@ -179,30 +190,147 @@ class App:
     def toggle_pit_board(self) -> None:
         self._close_sandbox()
         self.wiring = False
+        self.sensor_panel = False
         self.pit_board = not self.pit_board
 
     def toggle_wiring(self) -> None:
         self._close_sandbox()
         self.pit_board = False
+        self.sensor_panel = False
         self.wiring = not self.wiring
         if self.wiring:
             self.status("Network wiring: every input, hidden unit, and action, drawn as nodes and weighted links.")
 
+    def toggle_sensor_panel(self) -> None:
+        self._close_sandbox()
+        self.pit_board = False
+        self.wiring = False
+        self.sensor_panel = not self.sensor_panel
+        if self.sensor_panel:
+            self.sensor_draft = self.sensors
+            self.status("Sensor setup: choose rays and inputs, then apply to retrain both learners.")
+
+    def change_draft_rays(self, delta: int) -> None:
+        draft = self.sensor_draft or self.sensors
+        rays = max(0, min(MAX_RAYS, draft.rays + delta))
+        try:
+            self.sensor_draft = Sensors(rays, draft.extras)
+        except ValueError as exc:
+            self.status(str(exc))
+
+    def toggle_draft_input(self, key: str) -> None:
+        draft = self.sensor_draft or self.sensors
+        extras = tuple(k for k in draft.extras if k != key) if key in draft.extras else draft.extras + (key,)
+        try:
+            self.sensor_draft = Sensors(draft.rays, extras)
+        except ValueError as exc:
+            self.status(str(exc))
+
+    def cycle_track(self) -> None:
+        """Switch to the next track saved in data/tracks, then retrain on it."""
+        files = sorted(TRACKS.glob("*.json"))
+        if not files:
+            self.status("No saved tracks in data/tracks.")
+            return
+        current = self.track.definition()
+        index = -1
+        for i, path in enumerate(files):
+            try:
+                if Track.load(path).definition() == current:
+                    index = i
+            except (ValueError, KeyError, OSError, json.JSONDecodeError):
+                continue
+        for step in range(1, len(files) + 1):
+            path = files[(index + step) % len(files)]
+            try:
+                track = Track.load(path)
+            except (ValueError, KeyError, OSError, json.JSONDecodeError):
+                continue
+            self._record_setup_result()
+            self.track = track
+            self.reset_trainers()
+            self.status(f"Now racing on {track.name}. Both learners restarted on the new circuit.")
+            return
+        self.status("None of the saved tracks could be loaded.")
+
+    def _track_surface(self) -> pygame.Surface:
+        key = json.dumps(self.track.definition())
+        if self._track_art is None or self._track_art[0] != key:
+            self._track_art = (key, render_track(self.track))
+        return self._track_art[1]
+
+    GARAGE_SIZE = (390, 174)
+    GARAGE_HOME = (254, 294)   # where the garage is laid out; used when it is clear
+
+    def _garage_origin(self) -> tuple[int, int]:
+        """Top-left of the model garage: road-free, and as close to home as possible.
+
+        A summed-area table gives the road pixels under any box in constant time,
+        so every candidate position is scored in one vectorised pass.
+        """
+        key = json.dumps(self.track.definition())
+        if self._garage_slot is None or self._garage_slot[0] != key:
+            w, h = self.GARAGE_SIZE
+            pad, top = 6, 60   # keep a margin from the road; stay below the track labels
+            table = np.zeros((WORLD_H + 1, WORLD_W + 1), dtype=np.int64)
+            table[1:, 1:] = self.track.mask.cumsum(axis=0).cumsum(axis=1)
+            ys = np.arange(top, WORLD_H - h - 8 + 1, 2)
+            xs = np.arange(8, WORLD_W - w - 8 + 1, 2)
+            y0, y1 = np.clip(ys - pad, 0, WORLD_H), np.clip(ys + h + pad, 0, WORLD_H)
+            x0, x1 = np.clip(xs - pad, 0, WORLD_W), np.clip(xs + w + pad, 0, WORLD_W)
+            road = (table[np.ix_(y1, x1)] - table[np.ix_(y0, x1)]
+                    - table[np.ix_(y1, x0)] + table[np.ix_(y0, x0)])
+            home_x, home_y = self.GARAGE_HOME
+            distance = np.abs(ys - home_y)[:, None] + np.abs(xs - home_x)[None, :]
+            row, column = np.unravel_index(np.argmin(road * 100000 + distance), road.shape)
+            self._garage_slot = (key, (int(xs[column]), int(ys[row])))
+        return self._garage_slot[1]
+
+    def _record_setup_result(self) -> None:
+        result = self._setup_result()
+        if result:
+            self.sensor_results = (self.sensor_results + [result])[-12:]
+
+    def _setup_result(self) -> dict | None:
+        """Summary of how the current sensor setup has trained so far."""
+        evolution, dqn = self.trainers["evolution"], self.trainers["dqn"]
+        if not evolution.history and not dqn.history:
+            return None
+        return {"label": self.sensors.short_label(), "track": self.track.name,
+                "generations": len(evolution.history),
+                "evolution_best": evolution.best_score if math.isfinite(evolution.best_score) else None,
+                "lap_rate": max((row["completion"] for row in evolution.history), default=0.0),
+                "episodes": len(dqn.history),
+                "dqn_best": dqn.best_score if math.isfinite(dqn.best_score) else None,
+                "greedy_laps": sum(row["completion"] for row in dqn.evaluation_history)}
+
+    def apply_sensors(self, sensors: Sensors | None = None) -> None:
+        sensors = sensors or self.sensor_draft
+        if sensors is None or sensors == self.sensors:
+            self.status("That sensor setup is already training.")
+            return
+        self._record_setup_result()
+        self.settings.rays, self.settings.inputs = sensors.rays, sensors.extras
+        self.reset_trainers()
+        self.sensor_draft = sensors
+        self.status(f"Now training with {sensors.label()}. Both learners restarted from scratch.")
+
     def open_sandbox(self) -> None:
         frame = self._world_frame() or {}
         observation = frame.get("observation", [])
-        if len(observation) != 12:
+        if len(observation) != self.sensors.size:
             self.status("Wait for one driving decision before opening the decision sandbox.")
             return
         network = self._decision_network()
         if network is None:
             self.status("Load a model before inspecting race decisions.")
             return
-        self.sandbox = DecisionProbe.capture(network, observation, frame.get("action"))
+        self.sandbox = DecisionProbe.capture(network, observation, frame.get("action"), self.sensors)
         self.sandbox_previous_pause = self.paused
         self.paused = True
         self.pit_board = False
         self.wiring = False
+        self.sensor_panel = False
         self.status("Decision sandbox: change a sensor to inspect the frozen network. Training is paused.")
 
     def _close_sandbox(self) -> None:
@@ -232,8 +360,8 @@ class App:
         self.pit_board = False
         self.view = "race"
         self.paused = False
-        self.human = Car(self.track, self.settings.max_steps)
-        self.opponent = Car(self.track, self.settings.max_steps)
+        self.human = Car(self.track, self.settings.max_steps, self.sensors)
+        self.opponent = Car(self.track, self.settings.max_steps, self.sensors)
         side_x, side_y = -math.sin(self.human.angle) * 15, math.cos(self.human.angle) * 15
         self.human.x += side_x
         self.human.y += side_y
@@ -358,6 +486,14 @@ class App:
             network, mode, metadata = Network.load(path)
             if mode not in self.trainers:
                 raise ValueError("Unknown learning mode in model")
+            saved = metadata.get("settings", {})
+            # Models saved before sensors were configurable used the default setup.
+            sensors = Sensors(int(saved.get("rays", 7)), tuple(saved.get("inputs", EXTRA_INPUTS)))
+            if network.w1.shape[0] != sensors.size:
+                raise ValueError("Model weights do not match its saved sensor setup")
+            switched = sensors != self.sensors
+            if switched:
+                self.apply_sensors(sensors)
             self.algorithm = mode
             self.trainer.best_network = network
             origin = metadata.get("track")
@@ -375,7 +511,8 @@ class App:
                 self.trainer.last_decision_network = network.copy()
             self.view = "train"
             source_track = (origin or {}).get("name", "unknown")
-            self.status(f"Loaded {path.name} from {source_track}. Race it on the current track.")
+            note = f" Switched sensors to {sensors.label()}." if switched else ""
+            self.status(f"Loaded {path.name} from {source_track}. Race it on the current track.{note}")
         except (ValueError, KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
             self.status(f"Could not load model: {exc}")
 
@@ -495,6 +632,16 @@ class App:
     def _draw_model_garage(self, world, frame):
         if self.view not in ("train", "compare"):
             return
+        x, y = self._garage_origin()
+        if (x, y) == self.GARAGE_HOME:
+            self._paint_model_garage(world, frame)
+            return
+        # The garage is laid out at the first slot; shift it where this track has room.
+        layer = pygame.Surface((WORLD_W, WORLD_H), pygame.SRCALPHA)
+        self._paint_model_garage(layer, frame)
+        world.blit(layer, (x - self.GARAGE_HOME[0], y - self.GARAGE_HOME[1]))
+
+    def _paint_model_garage(self, world, frame):
         panel = pygame.Surface((390, 174), pygame.SRCALPHA)
         pygame.draw.rect(panel, (13, 27, 38, 237), panel.get_rect(), border_radius=13)
         pygame.draw.rect(panel, (65, 87, 100, 245), panel.get_rect(), 1, border_radius=13)
@@ -540,8 +687,10 @@ class App:
             text(world, self.small, "Best: greedy evaluated policy", MUTED, 402, 423)
         action = frame.get("action") if frame else None
         action_text = ACTION_NAMES[action] if isinstance(action, int) else "waiting"
-        text(world, self.tiny, f"7 RAYS  →  12 INPUTS  →  5 ACTIONS     NOW: {action_text}",
-             MUTED, 272, 450, 355)
+        rays, size = self.sensors.rays, self.sensors.size
+        text(world, self.tiny,
+             f"{rays} RAY{'' if rays == 1 else 'S'}  →  {size} INPUT{'' if size == 1 else 'S'}  →  5 ACTIONS"
+             f"     NOW: {action_text}", MUTED, 272, 450, 355)
 
     def _draw_editor_world(self, surface):
         pts = [(round(x), round(y)) for x, y in self.editor_points]
@@ -576,29 +725,37 @@ class App:
         box(self.screen, pygame.Rect(OX - 1, OY - 1, WORLD_W + 2, WORLD_H + 2),
             (15, 26, 36), BORDER, 8)
         world = pygame.Surface((WORLD_W, WORLD_H))
-        world.fill((14, 31, 38))
-        for gx in range(0, WORLD_W, 40):
-            pygame.draw.line(world, (21, 43, 48), (gx, 0), (gx, WORLD_H))
-        for gy in range(0, WORLD_H, 40):
-            pygame.draw.line(world, (21, 43, 48), (0, gy), (WORLD_W, gy))
         if self.view == "editor":
+            world.fill((14, 31, 38))
+            for gx in range(0, WORLD_W, 40):
+                pygame.draw.line(world, (21, 43, 48), (gx, 0), (gx, WORLD_H))
+            for gy in range(0, WORLD_H, 40):
+                pygame.draw.line(world, (21, 43, 48), (0, gy), (WORLD_W, gy))
             self._draw_editor_world(world)
         else:
-            points = [(round(x), round(y)) for x, y in self.track.points]
-            for point in points:
-                pygame.draw.circle(world, (115, 137, 143), point, int(self.track.width / 2 + 3))
-            pygame.draw.lines(world, (115, 137, 143), True, points, int(self.track.width + 7))
-            for point in points:
-                pygame.draw.circle(world, (45, 61, 71), point, int(self.track.width / 2))
-            pygame.draw.lines(world, (45, 61, 71), True, points, int(self.track.width))
+            world.blit(self._track_surface(), (0, 0))
+            # Checkpoint gates: faint marks across the road, with the next one lit.
+            gates = pygame.Surface((WORLD_W, WORLD_H), pygame.SRCALPHA)
+            next_gate = self.trainer.car.next_gate if self.view in ("train", "compare") else None
             for i, (x, y, tx, ty, _) in enumerate(self.track.checkpoints):
-                next_gate = self.trainer.car.next_gate if self.view in ("train", "compare") else None
-                color = ORANGE if i == 0 else GREEN if i == next_gate else (68, 91, 101)
+                if i == 0:
+                    continue  # the chequered line is gate 0
                 a = (x - ty * self.track.width / 2, y + tx * self.track.width / 2)
                 b = (x + ty * self.track.width / 2, y - tx * self.track.width / 2)
-                pygame.draw.line(world, color, a, b, 3 if i == next_gate or i == 0 else 1)
-                if i == 0:
-                    text(world, self.small, "START / FINISH", ORANGE, x + 10, y + 16)
+                if i == next_gate:
+                    pygame.draw.line(gates, (*GREEN, 235), a, b, 3)
+                else:
+                    pygame.draw.line(gates, (230, 235, 240, 42), a, b, 1)
+            world.blit(gates, (0, 0))
+            # Painted on the asphalt just before the line, reading along the track.
+            x, y, tx, ty, _ = self.track.checkpoints[0]
+            degrees = math.degrees(math.atan2(ty, tx))
+            if abs(degrees) > 90:
+                degrees -= 180 if degrees > 0 else -180
+            label = self.tiny.render("START / FINISH", True, (236, 238, 234))
+            label.set_alpha(170)
+            label = pygame.transform.rotate(label, -degrees)
+            world.blit(label, label.get_rect(center=(round(x - tx * 46), round(y - ty * 46))))
 
             if (self.view == "compare" or
                     self.view == "train" and self.algorithm == "evolution"):
@@ -621,14 +778,14 @@ class App:
                 sensor_y = frame.get("decision_y", y)
                 sensor_angle = frame.get("decision_angle", angle)
                 obs = frame.get("observation", [])
-                for i, degrees in enumerate(SENSOR_ANGLES):
+                for i, degrees in enumerate(self.sensors.angles):
                     ray_length = (obs[i] * 190 if len(obs) > i else
                                   self.track.ray_distance(sensor_x, sensor_y,
                                                           sensor_angle + math.radians(degrees)))
                     theta = sensor_angle + math.radians(degrees)
                     end = (sensor_x + ray_length * math.cos(theta),
                            sensor_y + ray_length * math.sin(theta))
-                    pygame.draw.line(world, GREEN if i == 3 else (95, 178, 206),
+                    pygame.draw.line(world, GREEN if degrees == 0 else (95, 178, 206),
                                      (sensor_x, sensor_y), end, 2)
                     pygame.draw.circle(world, ORANGE, (round(end[0]), round(end[1])), 3)
                 selected_color = (ORANGE if self.algorithm == "evolution" and self.view in ("train", "compare")
@@ -654,6 +811,10 @@ class App:
                 text(world, self.small, label, TEXT, 26, 21)
                 self._draw_model_garage(world, frame)
         self.screen.blit(world, (OX, OY))
+        if self.view in ("train", "compare"):
+            # Drawn after the world blit, which would otherwise cover it.
+            self.button(f"Track: {self.track.name}  ›", (OX + 420, OY + 13, 214, 37),
+                        self.cycle_track)
 
     def _draw_pit_board(self):
         if not self.pit_board or self.view not in ("train", "compare"):
@@ -752,16 +913,22 @@ class App:
              "Change one input. A copy of that decision's network recalculates without driving or training.",
              MUTED, 122, 204, 690)
         text(self.screen, self.tiny, "CHOOSE AN INPUT", BLUE, 122, 225)
-        for index, name in enumerate(INPUT_NAMES):
-            column, row = index % 3, index // 3
+        names = probe.sensors.names
+        columns = 3 if len(names) <= 12 else 4
+        rows = math.ceil(len(names) / columns)
+        column_width = 696 // columns
+        row_height = min(38, 156 / rows)
+        for index, name in enumerate(names):
+            column, row = index % columns, index // columns
             value = probe.edited[index]
             self.button(f"{name}   {value:+.2f}",
-                        (122 + column * 232, 245 + row * 38, 216, 32),
+                        (122 + column * column_width, round(245 + row * row_height),
+                         column_width - 16, round(row_height) - 6),
                         lambda index=index: probe.set_input(index),
                         active=probe.selected_input == index)
         low, high = probe.bounds()
         index = probe.selected_input
-        text(self.screen, self.bold, f"Adjust {INPUT_NAMES[index]}", TEXT, 122, 405)
+        text(self.screen, self.bold, f"Adjust {names[index]}", TEXT, 122, 405)
         self.button("Reset inputs", (688, 405, 135, 34), probe.reset)
         text(self.screen, self.small, f"Original {probe.original[index]:+.2f}", MUTED, 122, 436)
         text(self.screen, self.small, f"What if {probe.edited[index]:+.2f}", ORANGE, 651, 436)
@@ -794,9 +961,12 @@ class App:
              MUTED, 122, 650, 690)
 
     def _wiring_layout(self):
-        """Node centres for the wiring diagram: 12 inputs, 16 hidden units, 5 actions."""
+        """Node centres for the wiring diagram: every input, 16 hidden units, 5 actions."""
         input_x, hidden_x, output_x = 268, 508, 664
-        in_ys = [252 + i * 30 for i in range(len(INPUT_NAMES))]
+        count = self.sensors.size
+        spacing = min(30, 330 / max(1, count - 1))
+        top = 417 - spacing * (count - 1) / 2
+        in_ys = [top + i * spacing for i in range(count)]
         hidden_ys = [250 + i * 22.4 for i in range(16)]
         out_ys = [272 + i * 72 for i in range(5)]
         return input_x, hidden_x, output_x, in_ys, hidden_ys, out_ys
@@ -829,7 +999,8 @@ class App:
             text(self.screen, self.small, "Load or train a model to see its wiring.", MUTED, 122, 210)
             return
         text(self.screen, self.small,
-             "Every input, hidden unit, and action, with all 272 weighted connections.",
+             f"Every input, hidden unit, and action, with all {network.w1.size + network.w2.size} "
+             "weighted connections.",
              MUTED, 122, 204, 580)
 
         frame = self._world_frame() or {}
@@ -869,9 +1040,10 @@ class App:
                 pygame.draw.line(self.screen, self._wire_color(weight, w2_scale, live),
                                  (hidden_x, int(y1)), (output_x, int(y2)), 2 if lit else 1)
 
+        names = self.sensors.names
         for i, y in enumerate(in_ys):
-            value = float(obs[i]) if len(obs) == len(INPUT_NAMES) else 0.0
-            text(self.screen, self.tiny, INPUT_NAMES[i], MUTED, 124, int(y) - 7, 116)
+            value = float(obs[i]) if len(obs) == len(names) else 0.0
+            text(self.screen, self.tiny, names[i], MUTED, 124, int(y) - 7, 76)
             text(self.screen, self.mono, f"{value:+.2f}",
                  TEXT if hover_input == i else MUTED, 246 - 44, int(y) - 8)
             pygame.draw.circle(self.screen, (76, int(110 + min(1, abs(value)) * 125), 148),
@@ -902,14 +1074,14 @@ class App:
             note = "Replay stores node values and the action taken; the weights of that moment are not saved."
         elif hover_input is not None:
             column = network.w1[hover_input]
-            note = (f"{INPUT_NAMES[hover_input]} → 16 hidden units  ·  strongest {column.max():+.2f} / "
+            note = (f"{names[hover_input]} → 16 hidden units  ·  strongest {column.max():+.2f} / "
                     f"weakest {column.min():+.2f}")
         elif hover_hidden is not None:
             incoming = network.w1[:, hover_hidden]
             outgoing = network.w2[hover_hidden]
             strongest_in = int(np.argmax(np.abs(incoming)))
             strongest_out = int(np.argmax(np.abs(outgoing)))
-            note = (f"H{hover_hidden + 1}  ·  strongest input {INPUT_NAMES[strongest_in]} "
+            note = (f"H{hover_hidden + 1}  ·  strongest input {names[strongest_in]} "
                     f"{incoming[strongest_in]:+.2f}  →  strongest action {ACTION_NAMES[strongest_out]} "
                     f"{outgoing[strongest_out]:+.2f}")
         elif hover_output is not None:
@@ -922,6 +1094,112 @@ class App:
         text(self.screen, self.tiny,
              "Node fill shows the current value; line colour shows the learned weight. Weights change as training continues.",
              MUTED, 122, 638, 700)
+
+    SENSOR_PRESETS = (("Original", Sensors()),
+                      ("Rays + speed", Sensors(7, ("speed",))),
+                      ("Rays only", Sensors(7, ())),
+                      ("No rays", Sensors(0)),
+                      ("15 rays", Sensors(15)))
+    INPUT_HINTS = {"speed": "How fast the car is moving.",
+                   "goal": "Bearing to the next gate. Route hint.",
+                   "lane": "Distance from the centre line. Route hint.",
+                   "route": "Angle to the road direction. Route hint."}
+
+    def _draw_sensor_panel(self):
+        if not self.sensor_panel or self.view not in ("train", "compare"):
+            return
+        draft = self.sensor_draft or self.sensors
+        dim = pygame.Surface((WORLD_W, WORLD_H), pygame.SRCALPHA)
+        dim.fill((6, 13, 20, 199))
+        self.screen.blit(dim, (OX, OY))
+        footer_dim = pygame.Surface((WORLD_W, 146), pygame.SRCALPHA)
+        footer_dim.fill((6, 13, 20, 175))
+        self.screen.blit(footer_dim, (OX, 739))
+        box(self.screen, pygame.Rect(100, 151, 740, 526), (18, 31, 43), (88, 119, 131))
+        text(self.screen, self.title, "SENSOR SETUP", TEXT, 122, 171)
+        self.button("Close  R", (722, 168, 101, 36), self.toggle_sensor_panel)
+        text(self.screen, self.small,
+             "Choose what the car can sense. Applying restarts both learners with a matching network.",
+             MUTED, 122, 204, 690)
+
+        # Rays: stepper plus a fan preview drawn at the real sensor angles.
+        text(self.screen, self.tiny, "RAYS", BLUE, 122, 232)
+        self.button("−", (122, 252, 40, 36), lambda: self.change_draft_rays(-1),
+                    disabled=draft.rays == 0)
+        pygame.draw.rect(self.screen, PANEL2, (168, 252, 88, 36), border_radius=8)
+        rendered = self.title.render(str(draft.rays), True, GREEN)
+        self.screen.blit(rendered, rendered.get_rect(center=(212, 270)))
+        self.button("+", (262, 252, 40, 36), lambda: self.change_draft_rays(1),
+                    disabled=draft.rays == MAX_RAYS)
+        text(self.screen, self.tiny, f"0 to {MAX_RAYS}, spread across 180°", MUTED, 312, 263)
+        preview = pygame.Rect(122, 300, 330, 164)
+        pygame.draw.rect(self.screen, (13, 24, 34), preview, border_radius=8)
+        cx, cy = preview.centerx, preview.bottom - 26
+        for degrees in draft.angles:
+            theta = -math.pi / 2 + math.radians(degrees)
+            end = (cx + 118 * math.cos(theta), cy + 118 * math.sin(theta))
+            pygame.draw.line(self.screen, GREEN if degrees == 0 else (95, 178, 206), (cx, cy), end, 2)
+            pygame.draw.circle(self.screen, ORANGE, (round(end[0]), round(end[1])), 3)
+        self._draw_car(self.screen, cx, cy, -math.pi / 2, ORANGE)
+        if not draft.rays:
+            text(self.screen, self.small, "No rays: the car cannot see walls", MUTED,
+                 preview.x + 60, preview.y + 60)
+
+        # Extra inputs: one toggle each.
+        text(self.screen, self.tiny, "EXTRA INPUTS", BLUE, 480, 232)
+        for i, key in enumerate(EXTRA_INPUTS):
+            y = 252 + i * 53
+            on = key in draft.extras
+            count = len(EXTRA_INPUTS[key][0])
+            text(self.screen, self.bold, EXTRA_LABELS[key], TEXT if on else MUTED, 480, y)
+            text(self.screen, self.tiny,
+                 f"{count} input{'s' if count > 1 else ''} · {self.INPUT_HINTS[key]}",
+                 MUTED, 480, y + 21, 262)
+            self.button("On" if on else "Off", (752, y + 3, 68, 32),
+                        lambda key=key: self.toggle_draft_input(key), active=on)
+
+        text(self.screen, self.tiny, "PRESETS", BLUE, 122, 472)
+        for i, (label, preset) in enumerate(self.SENSOR_PRESETS):
+            self.button(label, (122 + i * 140, 488, 132, 30),
+                        lambda preset=preset: setattr(self, "sensor_draft", preset),
+                        active=draft == preset)
+
+        changed = draft != self.sensors
+        weights = draft.size * 16 + 16 * 5
+        text(self.screen, self.small, draft.label(), ORANGE if changed else TEXT, 122, 530, 500)
+        text(self.screen, self.tiny,
+             f"{draft.size} → 16 hidden → 5 actions · {weights} weights"
+             + ("  ·  not applied yet" if changed else "  ·  training now"),
+             MUTED, 122, 551, 500)
+        self.button("Apply & restart", (640, 528, 180, 38), self.apply_sensors,
+                    accent=changed, disabled=not changed)
+
+        # Results so far, per setup, so a restart does not lose earlier numbers.
+        text(self.screen, self.tiny, f"RESULTS BY SETUP · {self.track.name.upper()}", BLUE, 122, 578, 300)
+        text(self.screen, self.tiny, "EVOLUTION  gens · best · lap rate", MUTED, 438, 578)
+        text(self.screen, self.tiny, "DQN  episodes · best greedy", MUTED, 650, 578)
+        current = self._setup_result()
+        entries = [(row, False) for row in self.sensor_results
+                   if row["track"] == self.track.name][-3:]
+        if current:
+            entries.append((current, True))
+        if not entries:
+            text(self.screen, self.tiny, "Train for a generation or episode; results appear here.",
+                 MUTED, 122, 598)
+        for i, (row, live) in enumerate(entries):
+            y = 598 + i * 18
+            color = TEXT if live else MUTED
+            best = "–" if row["evolution_best"] is None else f"{row['evolution_best']:.0f}"
+            dqn_best = "–" if row["dqn_best"] is None else f"{row['dqn_best']:.0f}"
+            if live:
+                pygame.draw.circle(self.screen, GREEN, (126, y + 8), 3)
+            text(self.screen, self.tiny, row["label"] + ("  · now" if live else ""), color, 134, y, 296)
+            text(self.screen, self.tiny,
+                 f"{row['generations']} · {best} · {row['lap_rate'] * 100:.0f}%", color, 438, y, 200)
+            text(self.screen, self.tiny, f"{row['episodes']} · {dqn_best}", color, 650, y, 170)
+        text(self.screen, self.tiny,
+             "Compare setups after similar training time; more generations alone raise the scores.",
+             MUTED, 122, 657, 700)
 
     def _draw_header(self):
         text(self.screen, self.title, "RACING ML LAB", TEXT, 22, 17)
@@ -968,19 +1246,11 @@ class App:
         # Three stages expose actual values without burying them under 272 weight lines.
         for x in (RX + 182, RX + 306):
             pygame.draw.line(self.screen, BORDER, (x, 150), (x, 319))
-        text(self.screen, self.tiny, "01  SENSE · 12 INPUTS", BLUE, RX + 18, 145)
+        size = self.sensors.size
+        text(self.screen, self.tiny, f"01  SENSE · {size} INPUT{'' if size == 1 else 'S'}", BLUE, RX + 18, 145)
         text(self.screen, self.tiny, "02  THINK · 16 UNITS", GREEN, RX + 194, 145)
         text(self.screen, self.tiny, "03  ACT · 5 VALUES", ORANGE, RX + 318, 145)
-        for i, name in enumerate(INPUT_NAMES):
-            y = 165 + i * 13
-            value = float(obs[i]) if len(obs) == len(INPUT_NAMES) else 0.0
-            text(self.screen, self.tiny, name, MUTED, RX + 18, y - 2, 76)
-            pygame.draw.rect(self.screen, (39, 55, 69), (RX + 96, y + 1, 46, 5), border_radius=2)
-            width = round(min(1, abs(value)) * 46)
-            if width:
-                pygame.draw.rect(self.screen, BLUE if value >= 0 else RED,
-                                 (RX + 96, y + 1, width, 5), border_radius=2)
-            text(self.screen, self.tiny, f"{value:+.2f}", TEXT, RX + 145, y - 3)
+        self._draw_sense_column(obs)
         hovered = None
         for i in range(16):
             x = RX + 206 + (i % 4) * 24
@@ -1015,13 +1285,14 @@ class App:
                              border_radius=2)
         footer = pygame.Rect(RX + 14, 329, RW - 28, 20)
         pygame.draw.rect(self.screen, (27, 43, 55), footer, border_radius=4)
-        if hovered is not None and self.view != "replay" and len(obs) == 12 and len(hidden) == 16:
+        if (hovered is not None and self.view != "replay" and len(obs) == self.sensors.size
+                and len(hidden) == 16):
             network = self._decision_network()
             contributions = obs * network.w1[:, hovered]
             strongest_input = int(np.argmax(np.abs(contributions)))
             outgoing = hidden[hovered] * network.w2[hovered]
             strongest_output = int(np.argmax(np.abs(outgoing)))
-            note = (f"H{hovered + 1}: {INPUT_NAMES[strongest_input]} {contributions[strongest_input]:+.2f}"
+            note = (f"H{hovered + 1}: {self.sensors.names[strongest_input]} {contributions[strongest_input]:+.2f}"
                     f"  →  {ACTION_NAMES[strongest_output]} {outgoing[strongest_output]:+.2f}")
         elif self.sandbox is not None:
             note = "Hypothetical model output only · car position and learning do not change."
@@ -1033,6 +1304,38 @@ class App:
         else:
             note = "Orange is the action taken. Hover a hidden unit for its strongest links."
         text(self.screen, self.tiny, note, MUTED, footer.x + 6, footer.y + 3, footer.width - 12)
+
+    def _sense_row(self, name, value, y):
+        text(self.screen, self.tiny, name, MUTED, RX + 18, y - 2, 76)
+        pygame.draw.rect(self.screen, (39, 55, 69), (RX + 96, y + 1, 46, 5), border_radius=2)
+        width = round(min(1, abs(value)) * 46)
+        if width:
+            pygame.draw.rect(self.screen, BLUE if value >= 0 else RED,
+                             (RX + 96, y + 1, width, 5), border_radius=2)
+        text(self.screen, self.tiny, f"{value:+.2f}", TEXT, RX + 145, y - 3)
+
+    def _draw_sense_column(self, obs):
+        sensors = self.sensors
+        values = [float(v) for v in obs] if len(obs) == sensors.size else [0.0] * sensors.size
+        if sensors.size <= 12:
+            for i, name in enumerate(sensors.names):
+                self._sense_row(name, values[i], 165 + i * 13)
+            return
+        # Too many rows to list: draw the rays as a fan of bars, left to right,
+        # and keep the extra inputs as labelled rows underneath.
+        rays = sensors.rays
+        chart = pygame.Rect(RX + 18, 162, 158, 52)
+        pygame.draw.rect(self.screen, (27, 43, 55), chart, border_radius=4)
+        slot = chart.width / rays
+        bar = max(3, int(slot) - 3)
+        for i, degrees in enumerate(sensors.angles):
+            height = round(min(1, max(0, values[i])) * (chart.height - 6))
+            x = round(chart.x + i * slot + (slot - bar) / 2)
+            pygame.draw.rect(self.screen, GREEN if degrees == 0 else BLUE,
+                             (x, chart.bottom - 3 - height, bar, height), border_radius=1)
+        text(self.screen, self.tiny, f"{rays} RAYS  ·  left → right", MUTED, RX + 18, 216, 160)
+        for row, i in enumerate(range(rays, sensors.size)):
+            self._sense_row(sensors.names[i], values[i], 239 + row * 13)
 
     def _metric_values(self):
         metric = "score" if self.algorithm == "evolution" and self.chart_metric == "reward" else self.chart_metric
@@ -1125,6 +1428,8 @@ class App:
     def _draw_settings(self):
         box(self.screen, pygame.Rect(RX, 625, RW, 260))
         text(self.screen, self.bold, "RUN STATUS", TEXT, RX + 18, 637)
+        self.button("Sensors  R", (RX + 402, 632, 118, 26), self.toggle_sensor_panel,
+                    active=self.sensor_panel, disabled=self.view not in ("train", "compare"))
         trainer = self.trainer
         if self.algorithm == "evolution":
             run_text = (f"Generation {trainer.generation}  ·  {trainer.active_count}/{len(trainer.population)} driving"
@@ -1154,6 +1459,7 @@ class App:
         if progress:
             pygame.draw.rect(self.screen, GREEN, (RX + 18, 708, round((RW - 36) * progress / 100), 5), border_radius=3)
         text(self.screen, self.tiny, "TRAINING SETTINGS", BLUE, RX + 18, 719)
+        text(self.screen, self.tiny, f"Sensors: {self.sensors.label()}", MUTED, RX + 141, 719, 380)
         rows = [("Seed", "seed", "Same random start for a repeatable run"),
                 ("Max steps", "max_steps", "Time limit per car or episode")]
         if self.algorithm == "evolution":
@@ -1295,13 +1601,13 @@ class App:
         box(self.screen, pygame.Rect(70, 123, 800, 550), PANEL)
         text(self.screen, self.title, "HOW A DRIVER LEARNS", TEXT, 99, 150)
         lines = [
-            ("1  SEE", "Seven rays, speed, the next gate, and lane alignment form 12 inputs."),
+            ("1  SEE", f"{self.sensors.label()}. Press R to change what the car senses."),
             ("2  DECIDE", "The network transforms inputs through 16 hidden neurons into five action values."),
             ("3  ACT", "The car steers, accelerates, coasts, or brakes under shared physics."),
             ("4  FEEDBACK", "New forward progress and ordered gates earn credit; crashes and time cost points."),
             ("EVOLUTION", "A whole generation drives together. Select a car to inspect its own network."),
             ("DQN", "One network learns action values from past steps; exploration slowly decreases."),
-            ("EXPLORE", "Compare trains both methods. F opens the pit wall; I probes a frozen decision."),
+            ("EXPLORE", "Compare trains both methods. F pit wall · I what-if · N wiring · R sensors."),
             ("EVALUATE", "Compare on a track the learner has not trained on. Training score alone can mislead."),
         ]
         for i, (heading, body) in enumerate(lines):
@@ -1429,6 +1735,10 @@ class App:
                         return True
                 if self.sandbox is not None or (self.pit_board and pygame.Rect(90, 143, 760, 523).collidepoint(event.pos)):
                     return True
+                # Clicks inside the wiring or sensor overlays must not select a car underneath.
+                if ((self.wiring or self.sensor_panel and self.view in ("train", "compare"))
+                        and pygame.Rect(100, 151, 740, 526).collidepoint(event.pos)):
+                    return True
             if self.view == "editor":
                 self._editor_click(event.pos, event.button)
             elif event.button == 1 and (self.view == "compare" or
@@ -1452,6 +1762,12 @@ class App:
                 return True
             if self.wiring and event.key in (pygame.K_ESCAPE, pygame.K_n):
                 self.toggle_wiring()
+                return True
+            if self.sensor_panel and event.key in (pygame.K_ESCAPE, pygame.K_r):
+                self.toggle_sensor_panel()
+                return True
+            if event.key == pygame.K_r and self.view in ("train", "compare"):
+                self.toggle_sensor_panel()
                 return True
             if event.key == pygame.K_n and self.view in ("train", "compare", "race", "replay"):
                 self.toggle_wiring()
@@ -1481,6 +1797,7 @@ class App:
         self._draw_bottom()
         self._draw_pit_board()
         self._draw_wiring()
+        self._draw_sensor_panel()
         self._draw_sandbox()
         pygame.display.flip()
 

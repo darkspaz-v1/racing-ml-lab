@@ -69,6 +69,9 @@ class Network:
                 setattr(net, name, data[name].astype(np.float32).copy())
             mode = str(data["mode"])
             metadata = json.loads(str(data["metadata"])) if "metadata" in data else {}
-        if net.w1.shape != (12, 16) or net.w2.shape != (16, 5):
+        # Input width depends on the sensor setup it was trained with; the hidden
+        # layer and the five driving actions are fixed.
+        if (net.w1.ndim != 2 or net.w1.shape[1] != 16 or not 1 <= net.w1.shape[0] <= 20
+                or net.b1.shape != (16,) or net.w2.shape != (16, 5) or net.b2.shape != (5,)):
             raise ValueError("Model architecture does not match this version of the lab")
         return net, mode, metadata

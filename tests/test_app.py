@@ -44,7 +44,7 @@ def test_saved_model_races_on_a_different_current_track(workbench, monkeypatch, 
     workbench.load_model()
     assert workbench.track.name == "Harbor Loop"
     assert workbench.trainer.best_network is not None
-    assert workbench.trainer.best_origin["name"] == "Foundry Loop"
+    assert workbench.trainer.best_origin["name"] == "Apex Circuit"
     assert workbench.trainer.best_score == -float("inf")
     workbench.start_race()
     for _ in range(5):
@@ -67,7 +67,7 @@ def test_replay_round_trip_and_step_controls(workbench, monkeypatch, tmp_path):
     monkeypatch.setattr(workbench, "_file_dialog", lambda *args: path)
     workbench.open_replay()
     assert workbench.replay["frames"]
-    assert workbench.track.name == "Foundry Loop"
+    assert workbench.track.name == "Apex Circuit"
     workbench.draw()
 
 

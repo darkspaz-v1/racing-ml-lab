@@ -9,6 +9,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from racing_lab.learning import DQNTrainer, EvolutionTrainer, Settings
+from racing_lab.simulation import EXTRA_INPUTS
 from racing_lab.track import Track, default_track
 
 
@@ -22,11 +23,18 @@ def main():
     parser.add_argument("--max-steps", type=int, default=750)
     parser.add_argument("--population", type=int, default=24)
     parser.add_argument("--epsilon-decay", type=float, default=0.997)
+    parser.add_argument("--rays", type=int, default=7, help="number of sensor rays, 0-15")
+    parser.add_argument("--inputs", default=",".join(EXTRA_INPUTS),
+                        help=f"comma-separated extra inputs from {','.join(EXTRA_INPUTS)}, or 'none'")
     parser.add_argument("--csv", type=Path)
     args = parser.parse_args()
     track = Track.load(args.track) if args.track else default_track()
+    inputs = () if args.inputs.strip().lower() == "none" else tuple(
+        name.strip() for name in args.inputs.split(",") if name.strip())
     settings = Settings(seed=args.seed, max_steps=args.max_steps,
-                        population=args.population, epsilon_decay=args.epsilon_decay)
+                        population=args.population, epsilon_decay=args.epsilon_decay,
+                        rays=args.rays, inputs=inputs)
+    print(f"{track.name} | {settings.sensors().label()}", flush=True)
     trainer = EvolutionTrainer(track, settings) if args.mode == "evolution" else DQNTrainer(track, settings)
     started = time.perf_counter()
     while len(trainer.history) < args.runs:
