@@ -4,6 +4,8 @@
 
 **A hands-on machine-learning simulation by @darkspaz-v1.** Watch a 2D driver read sensor rays, choose an action, hit a wall or pass an ordered gate, and improve across runs. Train two independent learners on the same course: an evolutionary neural network and a Deep Q Network (DQN). The app runs locally and has no network connection.
 
+**For:** learners who want to see, test, and interrogate simple ML policies instead of treating a training loop as a black box. **Start:** [run it locally](#start-here), then use the [interactive tour](#try-the-interactive-tour) or reproduce the [measured experiments](docs/experiment-notes.md).
+
 ![Animated capture of evolution training: 24 cars drive Apex Circuit while the fitness chart climbs over generations 4 to 6](assets/evolution.gif)
 
 *Evolution training, generations 4–6, rendered headless by `scripts/capture_gif.py`.*
@@ -121,6 +123,25 @@ For a headless CSV experiment:
 
 See [the measured baseline experiment](docs/experiment-notes.md) for raw results, a first lap milestone, and the difference between exploratory training and greedy evaluation.
 
+### Test whether a learned policy transfers
+
+Scores from the circuit used for training are not evidence that the policy can
+drive a different one. The transfer harness trains a best policy, freezes it,
+then evaluates it greedily on a held-out bundled track without exploration or
+updates:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\evaluate_transfer.py `
+  --mode evolution --runs 30 --seeds 1 2 7 `
+  --train-track data\tracks\apex-circuit.json `
+  --evaluation-track data\tracks\harbor-loop.json `
+  --csv docs\results\apex-to-harbor-evolution.csv
+```
+
+Read [Held-out track evaluation](docs/transfer-evaluation.md) before drawing
+conclusions. A transfer failure is a useful result here: it shows track
+specialization rather than a general driving policy.
+
 ## Code tour
 
 | File | Read it for |
@@ -155,3 +176,10 @@ No data or model files are uploaded by the app. `data/models/` and `data/replays
 ## License
 
 MIT. See [LICENSE](LICENSE). The project was created as a personal learning lab by @darkspaz-v1.
+
+## Maintenance
+
+This is a maintained learning project. If you find a reproducible defect, open
+a [bug report](.github/ISSUE_TEMPLATE/bug_report.md) with the environment and
+steps needed to reproduce it. Please remove personal paths, saved model files,
+and any other private data before posting.
