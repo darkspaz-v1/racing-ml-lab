@@ -2,17 +2,37 @@
 
 [![CI](https://github.com/darkspaz-v1/racing-ml-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/darkspaz-v1/racing-ml-lab/actions/workflows/ci.yml)
 
-**A hands-on machine-learning simulation by @darkspaz-v1.** Watch a 2D driver read sensor rays, choose an action, hit a wall or pass an ordered gate, and improve across runs. Train two independent learners on the same course: an evolutionary neural network and a Deep Q Network (DQN). The app runs locally and has no network connection.
+**Train and compare an evolutionary neural network and a Deep Q Network (DQN) on the same 2D racing circuit.** Watch a driver read sensor rays and improve across runs. Runs locally, with no network connection.
 
-**For:** learners who want to see, test, and interrogate simple ML policies instead of treating a training loop as a black box. **Start:** [run it locally](#start-here), then use the [interactive tour](#try-the-interactive-tour) or reproduce the [measured experiments](docs/experiment-notes.md).
+**For:** learners who want to see, test, and interrogate simple ML policies, not treat training as a black box. **Start:** [run it locally](#start-here), take the [interactive tour](#try-the-interactive-tour), or reproduce the [measured experiments](docs/experiment-notes.md).
+
+`67 tests · CI on Python 3.12–3.13 · Reproducible benchmarks`
 
 ![Animated capture of evolution training: 24 cars drive Apex Circuit while the fitness chart climbs over generations 4 to 6](assets/evolution.gif)
 
-*Evolution training, generations 4–6, rendered headless by `scripts/capture_gif.py`.*
+*Twenty-four candidate drivers evolve simultaneously on Apex Circuit.*
 
-![Evolution population and reinforcement learning driver together](assets/compare.png)
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <a href="assets/compare.png"><img src="assets/compare.png" alt="Compare models tab: the evolution population and the DQN driver on the same track" width="100%"></a><br>
+      <b>Compare models</b><br>
+      Both learners on one track, side by side (their experience budgets differ).
+    </td>
+    <td width="33%" valign="top">
+      <a href="assets/decision-sandbox.png"><img src="assets/decision-sandbox.png" alt="Decision sandbox: sliders for each network input and the recalculated action values" width="100%"></a><br>
+      <b>Decision sandbox</b><br>
+      Drag any input and watch the five action values change.
+    </td>
+    <td width="33%" valign="top">
+      <a href="assets/network-wiring.png"><img src="assets/network-wiring.png" alt="Network wiring view: every node and weighted connection, colored by sign and size" width="100%"></a><br>
+      <b>Network wiring</b><br>
+      Every weighted connection, colored by sign and size.
+    </td>
+  </tr>
+</table>
 
-[Car garage: four bodies and eight paints](assets/car-garage.png) · [Switchback Park](assets/switchback-preview.png) · [Smoothed race controls](assets/race-controls.png) · [Pit wall: every car's live state](assets/pit-wall.png) · [Decision sandbox](assets/decision-sandbox.png) · [Network wiring](assets/network-wiring.png) · [Sensor setup](assets/sensor-setup.png) · [DQN curve](assets/dqn-learning.png)
+More views: [Car garage: four bodies and eight paints](assets/car-garage.png) · [Switchback Park](assets/switchback-preview.png) · [Smoothed race controls](assets/race-controls.png) · [Pit wall: every car's live state](assets/pit-wall.png) · [Sensor setup](assets/sensor-setup.png) · [DQN curve](assets/dqn-learning.png)
 
 ## Start here
 
