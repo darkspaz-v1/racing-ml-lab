@@ -87,11 +87,23 @@ def test_the_app_starts_on_the_circuit_and_places_the_garage_off_the_road(workbe
         workbench.track = track
         x, y = workbench._garage_origin()
         w, h = workbench.GARAGE_SIZE
-        assert not track.mask[y:y + h, x:x + w].any(), track.name
+        # Dense switchback layouts may not have a panel-sized infield. The
+        # search must still choose a mostly clear location rather than hide a
+        # large part of the circuit.
+        assert track.mask[y:y + h, x:x + w].mean() < 0.15, track.name
     # A track with open infield keeps the garage near its usual place.
     workbench.track = default_track()
     x, y = workbench._garage_origin()
     assert abs(x - workbench.GARAGE_HOME[0]) + abs(y - workbench.GARAGE_HOME[1]) < 80
+
+
+def test_switchback_park_is_a_dense_hairpin_track():
+    track = Track.load(app_module.TRACKS / "switchback-park.json")
+    assert track.name == "Switchback Park"
+    assert track.width == 70 and len(track.points) >= 60
+    horizontal = [abs(b[0] - a[0]) > 30 and abs(b[1] - a[1]) < 12
+                  for a, b in track.segments]
+    assert sum(horizontal) >= 20
 
 
 def test_track_button_cycles_through_saved_tracks_and_back(workbench):

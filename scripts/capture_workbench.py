@@ -12,17 +12,22 @@ import pygame
 
 from racing_lab.app import App
 from racing_lab.simulation import Sensors
+from racing_lab.track import Track
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("evolution", "dqn", "compare", "pitwall", "sandbox", "wiring", "sensors"),
+    parser.add_argument("--mode", choices=("evolution", "dqn", "compare", "pitwall", "sandbox", "wiring", "sensors", "cars", "race"),
                         default="evolution")
+    parser.add_argument("--track", type=Path, help="optional track JSON to show")
     parser.add_argument("--runs", type=int)
     parser.add_argument("--ticks", type=int, default=180,
                         help="simulation ticks for the comparison screenshot")
     args = parser.parse_args()
     app = App()
+    if args.track:
+        app.track = Track.load(args.track)
+        app.reset_trainers()
     if args.mode == "sensors":
         # A finished "rays only" run first, so the results table has a row to compare.
         app.apply_sensors(Sensors(7, ()))
@@ -35,7 +40,7 @@ def main():
             app.tick()
     elif args.mode == "dqn":
         app.select_algorithm("dqn")
-    if args.mode not in ("compare", "pitwall"):
+    if args.mode not in ("compare", "pitwall", "cars", "race"):
         target = args.runs or (700 if args.mode == "dqn" else 3 if args.mode == "sensors" else 2)
         while len(app.trainer.history) < target:
             app.trainer.tick()
@@ -43,6 +48,16 @@ def main():
             app.trainer.tick()
     if args.mode == "pitwall":
         app.toggle_pit_board()
+    elif args.mode == "race":
+        app.start_race()
+        app.tick()
+        app.human.speed = 2.4
+        app.race_steer = 0.22
+        app.race_throttle = 0.62
+    elif args.mode == "cars":
+        for _ in range(12):
+            app.tick()
+        app.toggle_car_panel()
     elif args.mode == "wiring":
         app.toggle_wiring()
     elif args.mode == "sensors":
@@ -56,7 +71,8 @@ def main():
     name = {"dqn": "dqn-learning.png", "evolution": "workbench.png",
             "compare": "compare.png", "pitwall": "pit-wall.png",
             "sandbox": "decision-sandbox.png",
-            "wiring": "network-wiring.png", "sensors": "sensor-setup.png"}[args.mode]
+            "wiring": "network-wiring.png", "sensors": "sensor-setup.png",
+            "cars": "car-garage.png", "race": "race-controls.png"}[args.mode]
     output = Path(__file__).resolve().parent.parent / "assets" / name
     pygame.image.save(app.screen, output)
     pygame.quit()

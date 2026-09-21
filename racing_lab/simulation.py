@@ -159,22 +159,31 @@ class Car:
                 values.append(math.sin(math.atan2(ty, tx) - self.angle))
         return np.asarray(values, dtype=np.float32)
 
-    def step(self, action: int) -> StepResult:
+    def step(self, action: int, *, steering_scale: float = 1.0,
+             throttle_scale: float = 1.0) -> StepResult:
+        """Advance one physics step.
+
+        Learners use the default full discrete controls. Race mode may pass
+        eased 0..1 scales so a held keyboard key behaves like a gradual pedal
+        and steering wheel without changing the learning environment.
+        """
         if self.done:
             return StepResult(0, crashed=self.crashed, done=True)
         if action not in range(len(ACTION_NAMES)):
             raise ValueError("Unknown driving action")
+        steering_scale = max(0.0, min(1.0, float(steering_scale)))
+        throttle_scale = max(0.0, min(1.0, float(throttle_scale)))
         before = (self.x, self.y)
         self.steps += 1
         if action in (0, 1, 2):
-            self.speed = min(MAX_SPEED, self.speed + 0.20)
+            self.speed = min(MAX_SPEED, self.speed + 0.20 * throttle_scale)
         elif action == 4:
             self.speed = max(0, self.speed - 0.30)
         else:
             self.speed *= 0.982
         self.speed *= 0.991
         turn = (-1 if action == 0 else 1 if action == 2 else 0)
-        self.angle += turn * 0.063 * min(1, self.speed / 2.4)
+        self.angle += turn * 0.063 * steering_scale * min(1, self.speed / 2.4)
         self.x += math.cos(self.angle) * self.speed
         self.y += math.sin(self.angle) * self.speed
 

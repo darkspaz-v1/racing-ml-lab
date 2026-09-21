@@ -14,14 +14,14 @@ import pygame
 
 from .track import WORLD_H, WORLD_W, Track
 
-GRASS = ((39, 82, 50), (44, 91, 56))
-ASPHALT = (57, 61, 67)
+GRASS = ((66, 104, 55), (73, 113, 61))
+ASPHALT = (83, 86, 88)
 LINE = (226, 229, 225)
 KERB_RED = (196, 56, 54)
 KERB_WHITE = (231, 231, 227)
 GRAVEL = (150, 131, 97)
-BARRIER = (168, 175, 181)
-TYRE = ((34, 35, 38), (206, 64, 60))
+BARRIER = (207, 211, 208)
+TYRE = ((30, 31, 33), (205, 52, 51), (231, 231, 227))
 CHECKER = ((20, 22, 25), (238, 238, 234))
 
 CORNER_TURN = math.radians(15)   # weighted heading change that counts as a corner
@@ -97,8 +97,9 @@ def render_track(track: Track) -> pygame.Surface:
     barrier = (distance > half + BARRIER_GAP - 2) & (distance <= half + BARRIER_GAP + 2)
     tyres = barrier & corner
     image[barrier & ~corner] = BARRIER
-    tyre_colour = ((arc // 9).astype(int) % 2)[tyres]
-    image[tyres] = np.where(tyre_colour[:, None] == 0, np.array(TYRE[0]), np.array(TYRE[1]))
+    tyre_colour = ((arc // 9).astype(int) % 3)[tyres]
+    tyre_palette = np.asarray(TYRE)
+    image[tyres] = tyre_palette[tyre_colour]
 
     # The road itself. Every drivable pixel is fully asphalt; the one-pixel soft
     # edge lies just outside the physics boundary, never on the road.
@@ -121,4 +122,36 @@ def render_track(track: Track) -> pygame.Surface:
     image[finish] = np.where(squares[:, None] == 0, np.array(CHECKER[0]), np.array(CHECKER[1]))
 
     pixels = np.clip(image, 0, 255).astype(np.uint8)
-    return pygame.surfarray.make_surface(pixels.swapaxes(0, 1))
+    surface = pygame.surfarray.make_surface(pixels.swapaxes(0, 1))
+
+    # Small tire stacks make the boundary read like a tabletop racing circuit.
+    # They are decorative and sit outside the exact physics mask.
+    for number, sample_at in enumerate(np.arange(0, track.total_length, 18.0)):
+        x, y, tx, ty, _ = track._sample(float(sample_at))
+        for side_sign in (-1, 1):
+            px = round(x + -ty * side_sign * (half + BARRIER_GAP))
+            py = round(y + tx * side_sign * (half + BARRIER_GAP))
+            if 4 <= px < WORLD_W - 4 and 4 <= py < WORLD_H - 4:
+                colour = TYRE[(number // 2 + (1 if side_sign > 0 else 0)) % len(TYRE)]
+                pygame.draw.circle(surface, (18, 20, 21), (px + 1, py + 1), 4)
+                pygame.draw.circle(surface, colour, (px, py), 4)
+                pygame.draw.circle(surface, (25, 26, 27), (px, py), 1)
+
+    # A few deterministic trees fill safe grass areas without hiding the track.
+    tree_rng = np.random.default_rng(19)
+    planted = 0
+    for _ in range(250):
+        if planted >= 22:
+            break
+        x = int(tree_rng.integers(18, WORLD_W - 18))
+        y = int(tree_rng.integers(18, WORLD_H - 18))
+        if distance[y, x] <= half + BARRIER_GAP + 28:
+            continue
+        radius = int(tree_rng.integers(6, 10))
+        pygame.draw.ellipse(surface, (40, 65, 39), (x - radius + 4, y - radius + 5,
+                                                   radius * 2, radius * 2))
+        pygame.draw.circle(surface, (42, 91, 48), (x, y), radius)
+        pygame.draw.circle(surface, (61, 119, 57), (x - 2, y - 2), max(3, radius - 3))
+        pygame.draw.circle(surface, (89, 137, 66), (x - 3, y - 4), 2)
+        planted += 1
+    return surface
