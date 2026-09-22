@@ -2,6 +2,10 @@
 
 [![CI](https://github.com/darkspaz-v1/racing-ml-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/darkspaz-v1/racing-ml-lab/actions/workflows/ci.yml)
 
+![Racing ML Lab cover illustration: a tabletop racing circuit comparing evolution and DQN](assets/social-preview.jpg)
+
+*Project cover illustration — one shared circuit, two learning approaches: evolution and DQN.*
+
 **Train and compare an evolutionary neural network and a Deep Q Network (DQN) on the same 2D racing circuit.** Watch a driver read sensor rays and improve across runs. Runs locally, with no network connection.
 
 **For:** learners who want to see, test, and interrogate simple ML policies, not treat training as a black box. **Start:** [run it locally](#start-here), take the [interactive tour](#try-the-interactive-tour), or reproduce the [measured experiments](docs/experiment-notes.md).
